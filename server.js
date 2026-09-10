@@ -35,7 +35,6 @@ const fs = require("fs");
 const path = require("path");
 const { newCaptcha } = require("./captcha");
 const { Server } = require("socket.io");
-const { writeSession } = require("./firestore");
 
 // ---------- config ----------
 const PORT = process.env.PORT || 3000;
@@ -275,7 +274,6 @@ function upsertSession(id, patch, extra = {}) {
   Object.assign(next, canonicalSession(id, next, next.updatedAt));
   state.users[id] = next;
   db.save();
-  writeSession(id, canonicalSession(id, next, next.updatedAt));
   // Push realtime update to dashboards
   io.emit("sessionUpdate", next);
   io.to("admins").emit("newVisitor", next);
