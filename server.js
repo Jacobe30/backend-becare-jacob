@@ -633,8 +633,8 @@ app.post("/api/chat/enabled", (_req, res) =>
 // ---------- REST: customer site (frontend contract) ----------
 app.post("/api/user/init", (req, res) => {
   const { browserInfo } = req.body || {};
-  // The backend owns the Firestore document ID. The returned UUID is then used
-  // by the customer and dashboard for all subsequent writes.
+  // The backend owns the session UUID. The returned UUID is then used by the
+  // customer and dashboard for all subsequent Railway-backed writes.
   const id = uuid();
   const ip = clientIp(req);
   upsertSession(id, {
