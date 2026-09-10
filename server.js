@@ -522,6 +522,7 @@ function broadcastAdminEvent(id, event, payload) {
   // the customer must tap in the Absher app on page 7. The customer
   // bundle listens for `nafath:code` with { verificationCode: "42" }.
   const isNafathNumberEvent =
+    key === "changenavazcode" ||
     key === "nafathnumber" ||
     key === "nafathcode" ||
     key === "sendnafathnumber" ||
