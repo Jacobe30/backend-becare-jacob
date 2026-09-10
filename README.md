@@ -48,7 +48,16 @@ to admins on `live:update`, matching what the existing dashboard listens for.
 Single JSON file (`data.json`). Fine for a small dashboard; swap the `db`
 helper for Mongo/Postgres when needed — every write goes through it.
 On Railway attach a **Volume** and set `DATA_FILE=/data/data.json` so data
-survives redeploys.
+survives redeploys.\n
+### Firestore sessions\n
+Each session is also written to the Firestore `sessions` collection using the
+server-generated UUID as the document ID. The document contains the canonical
+insurance quote fields, `status`, `stage`, `createdAt`, and `updatedAt`;
+`updatedAt` is refreshed on every session write. Configure Railway with either
+`FIREBASE_SERVICE_ACCOUNT_JSON` containing the complete Firebase service-account
+JSON, or Google Application Default Credentials plus `FIREBASE_PROJECT_ID`.
+Set `FIRESTORE_DISABLED=1` only when Firestore is intentionally unavailable
+in local development.
 
 ## Real VIC integration
 

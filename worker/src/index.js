@@ -81,7 +81,7 @@ function corsHeaders(request, env) {
   const headers = new Headers({
     "Access-Control-Allow-Credentials": "true",
     "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type,Authorization",
+    "Access-Control-Allow-Headers": "Content-Type,Authorization,X-Api-Session-Token",
     Vary: "Origin",
   });
 
@@ -108,9 +108,10 @@ export default {
     const target = new URL(incoming.pathname + incoming.search, origin);
     const headers = new Headers(request.headers);
 
-    headers.set("Host", origin.host);
     headers.set("X-Forwarded-Host", incoming.host);
     headers.set("X-Forwarded-Proto", incoming.protocol.replace(":", ""));
+    const clientIp = request.headers.get("CF-Connecting-IP");
+    if (clientIp) headers.set("X-Forwarded-For", clientIp);
 
     if (request.method === "OPTIONS") {
       const responseHeaders = corsHeaders(request, env);
@@ -120,6 +121,10 @@ export default {
       return new Response(null, { status: 204, headers: responseHeaders });
     }
 
+    // This deliberately handles `/socket.io` exactly like every other path.
+    // Cloudflare passes the Upgrade header through and returns Railway's
+    // 101 response, while polling requests remain ordinary HTTP requests.
+    const isWebSocket = request.headers.get("Upgrade")?.toLowerCase() === "websocket";
     const proxiedRequest = new Request(target, {
       method: request.method,
       headers,
@@ -127,7 +132,7 @@ export default {
       redirect: "manual",
     });
 
-    // Cloudflare forwards the Upgrade header and WebSocket body untouched.
+    // Do not cache REST, polling, or WebSocket handshakes.
     const response = await fetch(proxiedRequest, {
       cf: { cacheEverything: false, cacheTtl: -1 },
     });
@@ -139,6 +144,9 @@ export default {
     const output = new Response(response.body, response);
     for (const [key, value] of responseHeaders) {
       output.headers.set(key, value);
+    }
+    if (isWebSocket && response.status !== 101) {
+      console.warn(`Socket.IO WebSocket upgrade was not accepted: ${response.status}`);
     }
     return output;
   },
