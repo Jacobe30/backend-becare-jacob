@@ -2,10 +2,10 @@
 
 ## 1. Create the repo
 ```bash
-unzip gosuksa-backend.zip -d gosuksa-backend
-cd gosuksa-backend
+unzip tmin-backend.zip -d tmin-backend
+cd tmin-backend
 git init && git add . && git commit -m "backend"
-git remote add origin git@github.com:<you>/gosuksa-backend.git
+git remote add origin git@github.com:<you>/tmin-backend.git
 git push -u origin main
 ```
 

@@ -1,4 +1,4 @@
-# gosuksa backend
+# tmin backend
 
 Drop-in Node.js backend that matches the exact API contract the frontend
 bundle expects. Deploy on Railway (or any Node host); point the Lovable

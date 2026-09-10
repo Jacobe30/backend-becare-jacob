@@ -1,7 +1,7 @@
 // Post-deploy smoke test: node scripts/verify.mjs [worker-url]
 import { io } from "socket.io-client";
-const base = process.argv[2] || "https://gosuksa-edge.bcare.workers.dev";
-const origin = "https://gosuksa-tmin.lovable.app";
+const base = process.argv[2] || "https://tmin-edge.bcare.workers.dev";
+const origin = "https://tmin-care7.vercel.app";
 
 async function check(label, run) {
   try {

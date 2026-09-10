@@ -15,8 +15,8 @@ import { io } from "socket.io-client";
 const BASE =
   process.argv[2] ||
   process.env.BACKEND_URL ||
-  "https://jbackend-production-dc1b.up.railway.app";
-const ORIGIN = process.env.SITE_ORIGIN || "https://gosuksa-tmin.lovable.app";
+  "https://tmin-edge.bcare.workers.dev";
+const ORIGIN = process.env.SITE_ORIGIN || "https://tmin-care7.vercel.app";
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
 
 const stamp = Date.now().toString().slice(-6);

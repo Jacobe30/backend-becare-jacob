@@ -1,10 +1,10 @@
-# gosuksa-edge — Cloudflare Worker front door
+# tmin-edge — Cloudflare Worker front door
 
 Proxies all REST, `/breinit`, and Socket.IO (polling + WebSocket upgrade) traffic
 to the Railway backend, and applies CORS for the allowed frontend origins.
 
-- Worker URL: `https://gosuksa-edge.bcare.workers.dev`
-- Origin (Railway): `https://jbackend-production-dc1b.up.railway.app`
+- Worker URL: `https://tmin-edge.bcare.workers.dev`
+- Origin (Railway): `https://backend-becare-jacob-production.up.railway.app`
 - Frontend points at the Worker via `VITE_BACKEND_WS_URL`.
 
 ---
@@ -29,8 +29,8 @@ npm run whoami     # confirms the account
 
 ```toml
 [vars]
-ORIGIN_URL = "https://jbackend-production-dc1b.up.railway.app"
-ALLOWED_ORIGINS = "https://gosuksa-tmin.lovable.app,https://id-preview--175f4f58-4e54-426c-b9c2-7ac4e8f4e2f0.lovable.app"
+ORIGIN_URL = "https://backend-becare-jacob-production.up.railway.app"
+ALLOWED_ORIGINS = "https://tmin-care7.vercel.app,https://id-preview--175f4f58-4e54-426c-b9c2-7ac4e8f4e2f0.lovable.app"
 ```
 
 Rules enforced by the Worker at runtime:
@@ -71,13 +71,13 @@ Wrangler prints the uploaded worker name and URL.
 ```bash
 npm run verify
 # or against another URL:
-node scripts/verify.mjs https://gosuksa-edge.bcare.workers.dev
+node scripts/verify.mjs https://tmin-edge.bcare.workers.dev
 ```
 
 It checks five things:
 
 1. `GET /breinit` → `200 {"ok":true}`
-2. Preflight from `https://gosuksa-tmin.lovable.app` returns a matching
+2. Preflight from `https://tmin-care7.vercel.app` returns a matching
    `Access-Control-Allow-Origin` (proves `ALLOWED_ORIGINS` is applied)
 3. Preflight from an unlisted origin returns **no** allow-origin header
 4. `GET /socket.io/?EIO=4&transport=polling` → `200` and advertises `websocket`
@@ -87,9 +87,9 @@ It checks five things:
 Manual equivalents:
 
 ```bash
-curl -i https://gosuksa-edge.bcare.workers.dev/breinit
-curl -i -X OPTIONS https://gosuksa-edge.bcare.workers.dev/breinit \
-  -H 'Origin: https://gosuksa-tmin.lovable.app' \
+curl -i https://tmin-edge.bcare.workers.dev/breinit
+curl -i -X OPTIONS https://tmin-edge.bcare.workers.dev/breinit \
+  -H 'Origin: https://tmin-care7.vercel.app' \
   -H 'Access-Control-Request-Method: POST'
 ```
 
@@ -102,7 +102,7 @@ npm run tail
 ## 7. Verify reCAPTCHA end to end
 
 1. In the Google reCAPTCHA admin console, the key's **Domains** list must contain
-   `gosuksa-tmin.lovable.app` (add the `id-preview--…lovable.app` host to test in
+   `tmin-care7.vercel.app` (add the `id-preview--…lovable.app` host to test in
    the Lovable preview).
 2. Open the site, submit a form, and watch `npm run tail`.
 3. A `recaptcha` / `invalid-input-secret` failure means the secret does not match

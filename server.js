@@ -1,5 +1,5 @@
 /**
- * gosuksa backend — Railway-ready (v12)
+ * tmin backend — Railway-ready (v12)
  *
  * Serves two contracts on the same service:
  *
@@ -583,7 +583,7 @@ function broadcastAdminEvent(id, event, payload) {
 }
 
 // ---------- REST: health / meta ----------
-app.get("/", (_req, res) => res.json({ ok: true, service: "gosuksa-backend" }));
+app.get("/", (_req, res) => res.json({ ok: true, service: "tmin-backend" }));
 app.get("/health", (_req, res) => {
   const adminSockets = io.sockets.adapter.rooms.get("admins")?.size || 0;
   res.json({
@@ -1319,6 +1319,6 @@ io.on("connection", (socket) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`gosuksa backend ${APP_VERSION} listening on :${PORT}`);
+  console.log(`tmin backend ${APP_VERSION} listening on :${PORT}`);
   console.log(`data file: ${DATA_FILE}`);
 });

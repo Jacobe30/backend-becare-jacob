@@ -1,8 +1,8 @@
 {
-  "name": "gosuksa-edge",
+  "name": "tmin-edge",
   "version": "1.0.0",
   "private": true,
-  "description": "Cloudflare Worker edge front door for the gosuksa Railway backend",
+  "description": "Cloudflare Worker edge front door for the tmin Railway backend",
   "scripts": {
     "login": "wrangler login",
     "whoami": "wrangler whoami",

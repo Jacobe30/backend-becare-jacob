@@ -1,11 +1,11 @@
 {
-  "name": "gosuksa-edge",
+  "name": "tmin-edge",
   "version": "1.0.0",
   "lockfileVersion": 3,
   "requires": true,
   "packages": {
     "": {
-      "name": "gosuksa-edge",
+      "name": "tmin-edge",
       "version": "1.0.0",
       "devDependencies": {
         "socket.io-client": "^4.8.3",
