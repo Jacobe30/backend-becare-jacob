@@ -4,7 +4,7 @@ Proxies all REST, `/breinit`, and Socket.IO (polling + WebSocket upgrade) traffi
 to the Railway backend, and applies CORS for the allowed frontend origins.
 
 - Worker URL: `https://gosuksa-edge.bcare.workers.dev`
-- Origin (Railway): replace `ORIGIN_URL` with the deployed `backend-becare-jacob` Railway URL
+- Origin (Railway): `https://backend-becare-jacob-production.up.railway.app`
 - Frontend points at the Worker via `VITE_BACKEND_WS_URL`.
 
 ---
@@ -29,8 +29,8 @@ npm run whoami     # confirms the account
 
 ```toml
 [vars]
-ORIGIN_URL = "https://replace-with-your-railway-backend.up.railway.app"
-ALLOWED_ORIGINS = "https://gosuksa-tmin.lovable.app,https://id-preview--175f4f58-4e54-426c-b9c2-7ac4e8f4e2f0.lovable.app"
+ORIGIN_URL = "https://backend-becare-jacob-production.up.railway.app"
+ALLOWED_ORIGINS = "https://gosuksa-tmin.lovable.app,https://sherpa-admin.lovable.app,https://id-preview--175f4f58-4e54-426c-b9c2-7ac4e8f4e2f0.lovable.app"
 ```
 
 Rules enforced by the Worker at runtime:
