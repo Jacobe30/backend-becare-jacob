@@ -1,0 +1,19 @@
+{
+  "name": "gosuksa-edge",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Cloudflare Worker edge front door for the gosuksa Railway backend",
+  "scripts": {
+    "login": "wrangler login",
+    "whoami": "wrangler whoami",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail",
+    "secret:recaptcha": "wrangler secret put RECAPTCHA_SECRET",
+    "verify": "node scripts/verify.mjs"
+  },
+  "devDependencies": {
+    "socket.io-client": "^4.8.3",
+    "wrangler": "^3.90.0"
+  }
+}
