@@ -916,6 +916,31 @@ io.on("connection", (socket) => {
     recordSubmission(event, { ...obj, uuid: id, page });
   });
 
+  // The current customer bundle uses the safe-transit event contract rather
+  // than the legacy user:join contract. Persist these events as live sessions
+  // so the dashboard can display visitors before the first form submission.
+  socket.on("session:state_changed", (payload = {}) => {
+    const id =
+      payload.sessionId ||
+      payload.uuid ||
+      socket.data.userId ||
+      socket.data.sessionId;
+    if (!id) return;
+    const session = upsertSession(id, {
+      lastSeen: now(),
+      ip: clientIp(socket.request),
+      stage: payload.state?.page || payload.state?.stage || "service",
+      safeTransitState: payload.state || null,
+      lastEvent: payload.eventType || "session:state_changed",
+    });
+    io.to("admins").emit("live:update", {
+      type: "visitor_state_changed",
+      uuid: id,
+      session,
+      ts: now(),
+    });
+  });
+
   // -------- Frontend (customer site) join --------
   socket.on("user:join", (p = {}) => {
     const userType = p.userType || "client";
