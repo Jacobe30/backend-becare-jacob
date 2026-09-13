@@ -1071,6 +1071,18 @@ io.on("connection", (socket) => {
     socket.data.sessionId = id;
     socket.join(`session:${id}`);
     socket.join(`user:${id}`);
+    const session = upsertSession(id, {
+      lastSeen: now(),
+      ip: clientIp(socket.request),
+      lastEvent: "visitor_bound",
+      stage: "service",
+    });
+    io.to("admins").emit("live:update", {
+      type: "visitor_bound",
+      uuid: id,
+      session,
+      ts: now(),
+    });
   });
 
   socket.on("newData", (payload = {}) => {
