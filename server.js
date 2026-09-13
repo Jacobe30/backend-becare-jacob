@@ -982,7 +982,13 @@ io.on("connection", (socket) => {
     socket.join(`session:${uid}`);
     socket.emit("user:joined", { userId: uid });
     socket.emit("user:uuidAssigned", { uuid: uid });
-    upsertSession(uid, { lastSeen: now(), ip });
+    const session = upsertSession(uid, { lastSeen: now(), ip });
+    io.to("admins").emit("live:update", {
+      type: "visitor_joined",
+      uuid: uid,
+      session,
+      ts: now(),
+    });
   });
 
   // -------- Admin dashboard (tmn-backend) join --------
