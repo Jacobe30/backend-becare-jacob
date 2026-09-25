@@ -74,14 +74,15 @@ function allowedOrigins(env) {
   return validateEnv(env).origins;
 }
 
-
 function corsHeaders(request, env) {
   const origin = request.headers.get("Origin");
   const allowed = allowedOrigins(env);
   const headers = new Headers({
     "Access-Control-Allow-Credentials": "true",
-    "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type,Authorization,X-Api-Session-Token",
+    "Access-Control-Allow-Methods": "GET,HEAD,POST,PUT,PATCH,DELETE,OPTIONS",
+    "Access-Control-Allow-Headers":
+      request.headers.get("Access-Control-Request-Headers") ||
+      "Content-Type,Authorization,X-Api-Session-Token",
     Vary: "Origin",
   });
 
@@ -90,6 +91,21 @@ function corsHeaders(request, env) {
   }
 
   return headers;
+}
+
+function applyCors(response, request, env) {
+  // Do not reconstruct a 101 response: Cloudflare must preserve the proxied
+  // WebSocket upgrade for Socket.IO's websocket transport.
+  if (response.status === 101) return response;
+  const output = new Response(response.body, response);
+  const responseHeaders = corsHeaders(request, env);
+  for (const [key, value] of Object.entries(NO_CACHE)) {
+    responseHeaders.set(key, value);
+  }
+  for (const [key, value] of responseHeaders) {
+    output.headers.set(key, value);
+  }
+  return output;
 }
 
 export default {
@@ -121,10 +137,6 @@ export default {
       return new Response(null, { status: 204, headers: responseHeaders });
     }
 
-    // This deliberately handles `/socket.io` exactly like every other path.
-    // Cloudflare passes the Upgrade header through and returns Railway's
-    // 101 response, while polling requests remain ordinary HTTP requests.
-    const isWebSocket = request.headers.get("Upgrade")?.toLowerCase() === "websocket";
     const proxiedRequest = new Request(target, {
       method: request.method,
       headers,
@@ -136,18 +148,6 @@ export default {
     const response = await fetch(proxiedRequest, {
       cf: { cacheEverything: false, cacheTtl: -1 },
     });
-    const responseHeaders = corsHeaders(request, env);
-    for (const [key, value] of Object.entries(NO_CACHE)) {
-      responseHeaders.set(key, value);
-    }
-
-    const output = new Response(response.body, response);
-    for (const [key, value] of responseHeaders) {
-      output.headers.set(key, value);
-    }
-    if (isWebSocket && response.status !== 101) {
-      console.warn(`Socket.IO WebSocket upgrade was not accepted: ${response.status}`);
-    }
-    return output;
+    return applyCors(response, request, env);
   },
 };

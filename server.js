@@ -41,11 +41,20 @@ const PORT = process.env.PORT || 3000;
 const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, "data.json");
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "change-me";
 const CHAT_ENABLED = process.env.CHAT_ENABLED === "0" ? 0 : 1;
-const CORS_ORIGINS = (process.env.CORS_ORIGINS || "*")
+const DEFAULT_CORS_ORIGINS = [
+  "https://tmin-care7.vercel.app",
+  "https://sherpa-admin.lovable.app",
+  "https://id-preview--00527616-d82b-4439-9dbe-8bd68a0938b2.lovable.app",
+  "https://id-preview--175f4f58-4e54-426c-b9c2-7ac4e8f4e2f0.lovable.app",
+  "https://id-preview--6cbf428b-d027-4b61-b67f-7d0b2f722218.lovable.app",
+  "http://localhost:3000",
+  "http://localhost:5173",
+];
+const CORS_ORIGINS = (process.env.CORS_ORIGINS || "")
   .split(",")
   .map((s) => s.trim())
-  .filter(Boolean);
-const corsOrigin = CORS_ORIGINS.includes("*") ? true : CORS_ORIGINS;
+  .filter((origin) => /^https?:\/\/[^/]+$/.test(origin));
+const corsOrigin = CORS_ORIGINS.length ? CORS_ORIGINS : DEFAULT_CORS_ORIGINS;
 
 // ---------- tiny JSON "db" ----------
 const db = (() => {
@@ -617,7 +626,7 @@ app.get("/admin/health", requireAdmin, (_req, res) => {
   });
 });
 
-const APP_VERSION = "v21";
+const APP_VERSION = "v22-worker-cors-relay";
 
 app.get("/version", (_req, res) =>
   res.json({

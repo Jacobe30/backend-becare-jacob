@@ -97,48 +97,10 @@ function attachAdminRelay(io) {
   if (!io || typeof io.on !== "function") {
     throw new Error("attachAdminRelay: expected a socket.io Server instance");
   }
-
-  io.on("connection", (socket) => {
-    // 1) Client joins its own room. Support several conventions.
-    const autoId = resolveSessionId(socket, null);
-    if (autoId) socket.join(autoId);
-
-    for (const joinEvent of ["join", "register", "subscribe"]) {
-      socket.on(joinEvent, (payload) => {
-        const id = resolveSessionId(socket, payload);
-        if (id) socket.join(id);
-      });
-    }
-
-    // 2) Admin actions -> forward to the target session room.
-    for (const event of RELAY_EVENTS) {
-      socket.on(event, (payload, ack) => {
-        const { id, extra } = normalizePayload(payload);
-        if (!id) {
-          if (typeof ack === "function") ack({ ok: false, error: "missing session id" });
-          return;
-        }
-
-        // Never leak admin auth tokens to the customer socket.
-        const clientExtra = { ...extra };
-        delete clientExtra.token;
-        delete clientExtra.adminToken;
-
-        // Forward to every room the customer socket might be in.
-        const hasExtra = Object.keys(clientExtra).length > 0;
-        const targets = [id, `user:${id}`, `session:${id}`];
-        for (const room of targets) {
-          if (hasExtra) io.to(room).emit(event, clientExtra);
-          else io.to(room).emit(event);
-        }
-
-        // Echo back to admins (dashboard listens here for confirmation).
-        io.to("admins").emit(`admin:${event}`, { id, ...clientExtra });
-
-        if (typeof ack === "function") ack({ ok: true, id, event });
-      });
-    }
-  });
+  // server.js owns connection authentication, room membership, and control
+  // event forwarding. Keeping this compatibility hook side-effect free avoids
+  // sending every admin action twice through an unauthenticated listener.
+  return io;
 }
 
 
