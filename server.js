@@ -627,7 +627,7 @@ app.get("/admin/health", requireAdmin, (_req, res) => {
   });
 });
 
-const APP_VERSION = "v23-safe-worker-submissions";
+const APP_VERSION = "v24-all-pages-contract";
 
 app.get("/version", (_req, res) =>
   res.json({
