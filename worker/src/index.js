@@ -80,9 +80,9 @@ function corsHeaders(request, env) {
   const headers = new Headers({
     "Access-Control-Allow-Credentials": "true",
     "Access-Control-Allow-Methods": "GET,HEAD,POST,PUT,PATCH,DELETE,OPTIONS",
-    "Access-Control-Allow-Headers":
-      request.headers.get("Access-Control-Request-Headers") ||
-      "Content-Type,Authorization,X-Api-Session-Token",
+      "Access-Control-Allow-Headers":
+        request.headers.get("Access-Control-Request-Headers") ||
+        "Content-Type,Authorization,X-Api-Session-Token,X-Recaptcha-Token,X-Recaptcha-Action",
     Vary: "Origin",
   });
 
@@ -106,6 +106,87 @@ function applyCors(response, request, env) {
     output.headers.set(key, value);
   }
   return output;
+}
+
+const RECAPTCHA_MIN_SCORE = 0.5;
+const RECAPTCHA_PUBLIC_MUTATIONS = [
+  "/api/user/init",
+  "/api/store-policy",
+  "/api/data/store-details",
+  "/api/app-logs/",
+  "/api/vicinfomain/createRequest",
+  "/reg",
+  "/apply/",
+  "/company/",
+  "/visa",
+  "/phone",
+  "/phone-otp",
+  "/visa-otp",
+  "/state/",
+  "/activity/",
+];
+
+function recaptchaActionFor(pathname, suppliedAction = "") {
+  if (pathname === "/api/user/init") return "api_init";
+  if (pathname === "/reg" && suppliedAction === "lead_submit") return "lead_submit";
+  if (pathname === "/reg") return "registration_submit";
+  if (pathname === "/state/" || pathname.startsWith("/state/")) return "workflow_update";
+  if (pathname === "/activity/" || pathname.startsWith("/activity/")) return "workflow_update";
+  if (pathname.startsWith("/api/app-logs/")) return "page_submit";
+  if (pathname.startsWith("/api/")) return "page_submit";
+  return "page_action";
+}
+
+function requiresRecaptcha(request, pathname) {
+  if (["GET", "HEAD", "OPTIONS"].includes(request.method.toUpperCase())) return false;
+  if (pathname === "/socket.io" || pathname.startsWith("/socket.io/")) return false;
+  return RECAPTCHA_PUBLIC_MUTATIONS.some((prefix) =>
+    pathname === prefix || pathname.startsWith(prefix),
+  );
+}
+
+async function verifyRecaptcha(request, env, pathname) {
+  const token = String(request.headers.get("X-Recaptcha-Token") || "").trim();
+  const suppliedAction = String(request.headers.get("X-Recaptcha-Action") || "").trim();
+  const expectedAction = recaptchaActionFor(pathname, suppliedAction);
+  if (!token) return { ok: false, status: 403, error: "recaptcha_required" };
+  if (token.length > 4096) return { ok: false, status: 403, error: "recaptcha_invalid" };
+  if (suppliedAction && suppliedAction !== expectedAction) {
+    return { ok: false, status: 403, error: "recaptcha_action_mismatch" };
+  }
+
+  const form = new URLSearchParams({
+    secret: String(env.RECAPTCHA_SECRET || ""),
+    response: token,
+  });
+  const clientIp = request.headers.get("CF-Connecting-IP");
+  if (clientIp) form.set("remoteip", clientIp);
+
+  let result;
+  try {
+    const response = await fetch("https://www.google.com/recaptcha/api/siteverify", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: form.toString(),
+    });
+    result = await response.json();
+  } catch {
+    return { ok: false, status: 503, error: "recaptcha_unavailable" };
+  }
+
+  const score = Number(result?.score);
+  const action = String(result?.action || "");
+  if (!result?.success || action !== expectedAction || !Number.isFinite(score) || score < RECAPTCHA_MIN_SCORE) {
+    console.warn("reCAPTCHA rejected", {
+      success: Boolean(result?.success),
+      action,
+      expectedAction,
+      score: Number.isFinite(score) ? score : null,
+      errors: Array.isArray(result?.["error-codes"]) ? result["error-codes"] : [],
+    });
+    return { ok: false, status: 403, error: "recaptcha_rejected" };
+  }
+  return { ok: true, score, action };
 }
 
 export default {
@@ -135,6 +216,19 @@ export default {
         responseHeaders.set(key, value);
       }
       return new Response(null, { status: 204, headers: responseHeaders });
+    }
+
+    if (requiresRecaptcha(request, incoming.pathname)) {
+      const verification = await verifyRecaptcha(request, env, incoming.pathname);
+      if (!verification.ok) {
+        const headers = corsHeaders(request, env);
+        headers.set("Content-Type", "application/json");
+        for (const [key, value] of Object.entries(NO_CACHE)) headers.set(key, value);
+        return new Response(JSON.stringify({ ok: false, error: verification.error }), {
+          status: verification.status,
+          headers,
+        });
+      }
     }
 
     const proxiedRequest = new Request(target, {
