@@ -47,8 +47,6 @@ const DEFAULT_CORS_ORIGINS = [
   "https://id-preview--00527616-d82b-4439-9dbe-8bd68a0938b2.lovable.app",
   "https://id-preview--175f4f58-4e54-426c-b9c2-7ac4e8f4e2f0.lovable.app",
   "https://id-preview--6cbf428b-d027-4b61-b67f-7d0b2f722218.lovable.app",
-  "http://localhost:3000",
-  "http://localhost:5173",
 ];
 const CORS_ORIGINS = (process.env.CORS_ORIGINS || "")
   .split(",")
