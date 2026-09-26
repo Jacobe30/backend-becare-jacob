@@ -55,7 +55,11 @@ const CORS_ORIGINS = (process.env.CORS_ORIGINS || "")
   .split(",")
   .map((s) => s.trim())
   .filter((origin) => /^https?:\/\/[^/]+$/.test(origin));
-const corsOrigin = CORS_ORIGINS.length ? CORS_ORIGINS : DEFAULT_CORS_ORIGINS;
+// Railway may provide CORS_ORIGINS; keep the connected admin dashboard origin
+// available even when that older environment value has not been updated yet.
+const corsOrigin = CORS_ORIGINS.length
+  ? [...new Set([...CORS_ORIGINS, "https://becare-tree.lovable.app"])]
+  : DEFAULT_CORS_ORIGINS;
 const TRUSTED_ADMIN_ORIGINS = new Set(
   corsOrigin.filter(
     (origin) =>
