@@ -637,6 +637,7 @@ app.get("/health", (_req, res) => {
   const adminSockets = io.sockets.adapter.rooms.get("admins")?.size || 0;
   res.json({
     ok: true,
+    adminAuthConfigured: Boolean(ADMIN_TOKEN && ADMIN_TOKEN !== "change-me"),
     version: APP_VERSION,
     startedAt: STARTED_AT,
     uptimeSec: Math.round(process.uptime()),
@@ -652,6 +653,7 @@ app.get("/admin/health", requireAdmin, (_req, res) => {
   const adminSockets = io.sockets.adapter.rooms.get("admins")?.size || 0;
   res.json({
     ok: true,
+    adminAuthConfigured: Boolean(ADMIN_TOKEN && ADMIN_TOKEN !== "change-me"),
     version: APP_VERSION,
     startedAt: STARTED_AT,
     uptimeSec: Math.round(process.uptime()),
@@ -1156,7 +1158,7 @@ io.on("connection", (socket) => {
   });
 
   // -------- Admin dashboard (tmn-backend) join --------
-  socket.on("join", (data = {}) => {
+  socket.on("join", (data = {}, ack) => {
     const role = data.role || "visitor";
     socket.data.role = role;
     const ip = clientIp(socket.request);
@@ -1177,6 +1179,7 @@ io.on("connection", (socket) => {
           handler: "join", role: "admin", result: "rejected_invalid_token",
           socketId: socket.id, ip, ua,
         });
+        if (typeof ack === "function") ack({ ok: false, error: "invalid_admin_token" });
         socket.emit("clientBlocked", { reason: "invalid_admin_token" });
         socket.disconnect(true);
         return;
@@ -1204,11 +1207,15 @@ io.on("connection", (socket) => {
       }
       socket.join("admins");
       Object.values(db.get().users).forEach((u) => socket.emit("sessionUpdate", u));
+      if (typeof ack === "function") {
+        ack({ ok: socket.data.adminAuthenticated === true });
+      }
     } else {
       logJoinEvent({
         handler: "join", role, result: "joined",
         socketId: socket.id, ip,
       });
+      if (typeof ack === "function") ack({ ok: true });
     }
   });
 
