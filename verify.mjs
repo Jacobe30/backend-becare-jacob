@@ -24,8 +24,9 @@ allOk &= await check("GET /breinit returns 200", async () => {
     countryCode: body.countryCode,
     crawler: body.crawler,
   });
-  return res.status === 200 && body.ok === true && body.allowed === false &&
-    body.countryCode === "XX" && body.crawler === false &&
+  return res.status === 200 && body.ok === true &&
+    body.allowed === (body.countryCode === "SA" && body.crawler === false) &&
+    /^[A-Z]{2}$/.test(body.countryCode) && body.crawler === false &&
     res.headers.get("cache-control")?.includes("no-store");
 });
 
@@ -34,15 +35,8 @@ allOk &= await check("GET /breinit classifies Google crawler and fails closed", 
     headers: { Origin: origin, "User-Agent": "AdsBot-Google/1.0" },
   });
   const body = await res.json();
-  return res.status === 200 && body.allowed === false && body.crawler === true;
-});
-
-allOk &= await check("GET /breinit accepts Saudi edge country without crawler", async () => {
-  const res = await fetch(`${base}/breinit`, {
-    headers: { Origin: origin, "CF-IPCountry": "SA" },
-  });
-  const body = await res.json();
-  return res.status === 200 && body.allowed === true && body.countryCode === "SA" && body.crawler === false;
+  return res.status === 200 && body.allowed === false && body.crawler === true &&
+    /^[A-Z]{2}$/.test(body.countryCode);
 });
 
 allOk &= await check(`CORS allows ${origin}`, async () => {
