@@ -58,6 +58,7 @@ const CORS_ORIGINS = (process.env.CORS_ORIGINS || "")
 // Railway may provide CORS_ORIGINS; keep the connected admin origin available
 // even when that older environment value has not been updated yet.
 const REQUIRED_CORS_ORIGINS = [
+  "https://caretreegoksa.lovable.app",
   "https://becare-tree.lovable.app",
 ];
 const corsOrigin = CORS_ORIGINS.length
