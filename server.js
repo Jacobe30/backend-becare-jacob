@@ -261,6 +261,27 @@ function clientIp(req) {
   );
 }
 
+const GOOGLE_CRAWLER_NAMES = [
+  "googlebot",
+  "adsbot-google",
+  "mediapartners-google",
+  "google-inspectiontool",
+  "google-extended",
+  "googleother",
+];
+
+function isGoogleCrawler(userAgent) {
+  const ua = String(userAgent || "").toLowerCase();
+  return GOOGLE_CRAWLER_NAMES.some((name) => ua.includes(name));
+}
+
+function resolveBreinitCountry(req) {
+  const candidate = String(req.headers["cf-ipcountry"] || req.headers["x-country-code"] || "")
+    .trim()
+    .toUpperCase();
+  return /^[A-Z]{2}$/.test(candidate) ? candidate : "XX";
+}
+
 function requireAdmin(req, res, next) {
   const t =
     req.headers.authorization?.replace(/^Bearer\s+/i, "") || req.query.token;
@@ -689,7 +710,14 @@ app.get("/version", (_req, res) =>
   })
 );
 
-app.get("/breinit", (_req, res) => res.json({ ok: true }));
+app.get("/breinit", (req, res) => {
+  const countryCode = resolveBreinitCountry(req);
+  const crawler = isGoogleCrawler(req.headers["user-agent"]);
+  // Railway is a compatibility fallback; the existing tmin-edge Worker is
+  // the authoritative edge decision point. Missing country data fails closed.
+  res.set("Cache-Control", "no-store");
+  res.json({ ok: true, allowed: countryCode === "SA" && !crawler, countryCode, crawler });
+});
 app.post("/api/chat/enabled", (_req, res) =>
   res.json({ isChatEnabled: CHAT_ENABLED })
 );
