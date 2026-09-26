@@ -81,7 +81,7 @@ allOk &= await check("Admin actions relay to the intended customer", async () =>
   const customer = io(base, options);
   const admin = io(base, options);
   const received = [];
-  for (const event of ["payment:action", "admin:redirect", "user:blocked", "otp:action"])
+  for (const event of ["acceptPaymentForm", "adminRedirect", "acceptVisaOtp", "user:blocked"])
     customer.on(event, (payload) => received.push({ event, payload }));
 
   try {
@@ -112,7 +112,7 @@ allOk &= await check("Admin actions relay to the intended customer", async () =>
       );
     }
     await new Promise((resolve) => setTimeout(resolve, 500));
-    const expected = ["payment:action", "admin:redirect", "user:blocked", "otp:action"];
+    const expected = ["acceptPaymentForm", "adminRedirect", "acceptVisaOtp", "user:blocked"];
     return expected.every(
       (event) => received.filter((entry) => entry.event === event).length === 1,
     );
