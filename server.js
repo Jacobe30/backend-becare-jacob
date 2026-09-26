@@ -44,6 +44,7 @@ const CHAT_ENABLED = process.env.CHAT_ENABLED === "0" ? 0 : 1;
 const DEFAULT_CORS_ORIGINS = [
   "https://tmin-care7.vercel.app",
   "https://treegosksa.vercel.app",
+  "https://caretreegoksa.lovable.app",
   "https://sherpa-admin.lovable.app",
   "https://id-preview--00527616-d82b-4439-9dbe-8bd68a0938b2.lovable.app",
   "https://id-preview--175f4f58-4e54-426c-b9c2-7ac4e8f4e2f0.lovable.app",
