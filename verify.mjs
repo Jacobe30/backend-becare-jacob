@@ -1,7 +1,7 @@
 // Post-deploy smoke test: node scripts/verify.mjs [worker-url]
 import { io } from "socket.io-client";
 const base = process.argv[2] || "https://tmin-edge.bcare.workers.dev";
-const origin = "https://tmin-care7.vercel.app";
+const origin = "https://becare-tree.lovable.app";
 
 async function check(label, run) {
   try {
@@ -54,7 +54,7 @@ allOk &= await check("Socket.IO polling handshake", async () => {
 });
 
 allOk &= await check("Admin actions relay to the intended customer", async () => {
-  const id = `verify-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const id = `verify-${Date.now()}`;
   const options = {
     transports: ["websocket"],
     extraHeaders: { Origin: origin },
