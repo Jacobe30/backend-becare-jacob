@@ -937,6 +937,32 @@ app.get("/users", maybeAdmin, (_req, res) => {
   );
   res.json(list);
 });
+// Safe dashboard feed: return only operational counters and timestamps. Never
+// expose customer form values, contact details, IPs, payment data, OTPs, PINs,
+// passwords, or identity codes to the dashboard.
+app.get("/admin/live-summary", requireAdmin, (_req, res) => {
+  const sessions = Object.values(db.get().users)
+    .map((row) => {
+      const pages = row.pages && typeof row.pages === "object" ? Object.keys(row.pages).length : 0;
+      const pageEvents = Array.isArray(row.pageEvents) ? row.pageEvents.length : 0;
+      const id = String(row._id || row.id || row.uuid || "").trim();
+      if (!id) return null;
+      return {
+        _id: id,
+        customerUuid: id,
+        createdAt: row.createdAt || row.created || null,
+        updatedAt: row.updatedAt || row.lastSeen || row.createdAt || null,
+        lastSeen: row.lastSeen || row.updatedAt || null,
+        blocked: row.blocked === true,
+        checked: row.checked === true,
+        pageCount: pages,
+        activityCount: pageEvents,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => (Date.parse(b.updatedAt || 0) || 0) - (Date.parse(a.updatedAt || 0) || 0));
+  res.json({ sessions });
+});
 app.get("/users/:id", maybeAdmin, (req, res) => {
   const s = db.get().users[req.params.id];
   if (!s) return res.status(404).json({ error: "not_found" });
