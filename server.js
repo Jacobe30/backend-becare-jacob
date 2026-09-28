@@ -996,7 +996,7 @@ app.get("/users", maybeAdmin, (req, res) => {
   const etag = `W/"users-${fingerprint}"`;
   res.set("ETag", etag);
   res.set("Cache-Control", "private, max-age=0, must-revalidate");
-  if (_req.headers["if-none-match"] === etag) return res.status(304).end();
+  if (req.headers["if-none-match"] === etag) return res.status(304).end();
   res.json(list);
 });
 // Safe dashboard feed: return only operational counters and timestamps. Never
