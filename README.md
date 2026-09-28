@@ -1,4 +1,4 @@
-# tmin backend
+# gosuksa backend
 
 Drop-in Node.js backend that matches the exact API contract the frontend
 bundle expects. Deploy on Railway (or any Node host); point the Lovable
@@ -45,11 +45,10 @@ to admins on `live:update`, matching what the existing dashboard listens for.
 
 ## Storage
 
-Single JSON file (`data.json`) hosted by Railway. Attach a Railway **Volume**
-and set `DATA_FILE=/data/data.json` so sessions survive redeploys. Every session
-uses a server-generated UUID, exposes the canonical insurance quote fields from
-`/users`, and refreshes `updatedAt` on every write. No Firebase or Firestore
-connection is required.
+Single JSON file (`data.json`). Fine for a small dashboard; swap the `db`
+helper for Mongo/Postgres when needed — every write goes through it.
+On Railway attach a **Volume** and set `DATA_FILE=/data/data.json` so data
+survives redeploys.
 
 ## Real VIC integration
 

