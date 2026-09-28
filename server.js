@@ -43,8 +43,7 @@ const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "change-me";
 const CHAT_ENABLED = process.env.CHAT_ENABLED === "0" ? 0 : 1;
 const DEFAULT_CORS_ORIGINS = [
   "https://tmin-care7.vercel.app",
-  "https://treegosksa.vercel.app",
-  "https://caretreegoksa.lovable.app",
+  "https://treegosksa.lovable.app",
   "https://becare-tree.lovable.app",
   "https://sherpa-admin.lovable.app",
   "https://id-preview--00527616-d82b-4439-9dbe-8bd68a0938b2.lovable.app",
@@ -58,7 +57,7 @@ const CORS_ORIGINS = (process.env.CORS_ORIGINS || "")
 // Railway may provide CORS_ORIGINS; keep the connected admin origin available
 // even when that older environment value has not been updated yet.
 const REQUIRED_CORS_ORIGINS = [
-  "https://caretreegoksa.lovable.app",
+  "https://treegosksa.lovable.app",
   "https://becare-tree.lovable.app",
 ];
 const corsOrigin = CORS_ORIGINS.length
